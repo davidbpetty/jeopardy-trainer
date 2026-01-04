@@ -236,6 +236,7 @@ button,select,input{font:inherit}
   font-size:12px;
 }
 
+/* Modal (iPhone-safe, scrollable) */
 .modal{
   border:none;
   padding:0;
@@ -243,23 +244,78 @@ button,select,input{font:inherit}
   width:min(920px, calc(100vw - 18px));
   background:rgba(17,26,51,.98);
   color:var(--text);
+  overflow:hidden;
 }
+
+/* Keep the dialog fully inside the viewport and allow internal scrolling */
 .modal[open]{
   position:fixed;
-  top:50%;
   left:50%;
-  transform:translate(-50%,-50%);
+  top:calc(env(safe-area-inset-top) + 12px);
+  transform:translateX(-50%);
+  max-height:calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 24px);
 }
+
 .modal::backdrop{background:rgba(0,0,0,.55)}
-.modalBody{padding:12px}
-.modalHeader{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+
+/* Scroll *inside* the modal body */
+.modalBody{
+  padding:12px;
+  max-height:inherit;
+  overflow:auto;
+  -webkit-overflow-scrolling:touch;
+}
+
+.modalHeader{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:10px;
+}
+
 .modalTitle{font-weight:900}
-.settingsGrid{display:grid;grid-template-columns:repeat(1, minmax(0, 1fr));gap:10px}
+
+.settingsGrid{
+  display:grid;
+  grid-template-columns:repeat(1, minmax(0, 1fr));
+  gap:10px;
+}
+
 .settingBlock{
   border:1px solid var(--line);
   border-radius:16px;
   background:rgba(255,255,255,.03);
   padding:12px;
+}
+
+.settingTitle{font-weight:900;margin-bottom:10px}
+.importStatus{margin-top:8px;color:var(--muted);font-weight:800}
+.hint{margin-top:8px;color:var(--muted);font-weight:700;font-size:12px;line-height:1.35}
+
+.row{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-top:10px;
+}
+
+.rowLabel{
+  min-width:140px;
+  color:var(--muted);
+  font-weight:900;
+  font-size:12px;
+  text-transform:uppercase;
+  letter-spacing:.6px;
+}
+
+/* Ensure file input is usable inside scrollable dialog on iOS */
+input[type="file"]{
+  width:100%;
+}
+
+/* Two-column settings on larger screens */
+@media (min-width: 900px){
+  .settingsGrid{grid-template-columns:repeat(2, minmax(0, 1fr))}
 }
 .settingTitle{font-weight:900;margin-bottom:10px}
 .importStatus{margin-top:8px;color:var(--muted);font-weight:800}
