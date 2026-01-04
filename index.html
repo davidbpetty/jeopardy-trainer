@@ -2,200 +2,217 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1a3a" />
   <title>Jeopardy Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=7">
+  <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">Jeopardy Trainer</div>
+  <div id="app" class="app">
+    <header class="topbar" role="banner">
+      <div class="topbar__left">
+        <div class="brand">
+          <div class="brand__title">Jeopardy Trainer</div>
+          <div id="statusLine" class="status" aria-live="polite">Import a TSV/CSV/JSON dataset in Settings to begin.</div>
+        </div>
+      </div>
+      <div class="topbar__right">
+        <button id="settingsBtn" class="iconbtn" type="button" aria-haspopup="dialog" aria-controls="settingsDialog" title="Settings">
+          <span class="iconbtn__glyph" aria-hidden="true">⚙️</span>
+          <span class="sr-only">Settings</span>
+        </button>
+      </div>
+    </header>
 
-    <div class="scoreWrap">
-      <div class="scoreLabel">Score</div>
-      <div id="score" class="scoreValue">0</div>
+    <main id="main" class="main" role="main">
+      <!-- Board view -->
+      <section id="boardView" class="view view--active" aria-label="Board">
+        <div class="boardTop">
+          <div class="boardTop__row">
+            <div class="pill">
+              <span class="pill__label">Categories</span>
+              <select id="categoryCount" class="select" aria-label="Category count">
+                <option value="3">3</option>
+                <option value="4" selected>4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+              </select>
+            </div>
+
+            <div class="pill">
+              <span class="pill__label">Score</span>
+              <span id="scoreLine" class="pill__value">$0</span>
+            </div>
+
+            <button id="newBoardBtn" class="btn btn--primary" type="button">New Board</button>
+          </div>
+        </div>
+
+        <div id="boardWrap" class="boardWrap" aria-label="Jeopardy board"></div>
+      </section>
+
+      <!-- Clue view -->
+      <section id="clueView" class="view" aria-label="Clue">
+        <div class="clueHeader">
+          <button id="clueBackBtn" class="btn btn--ghost" type="button">Back</button>
+          <div class="clueHeader__meta">
+            <div id="clueMeta" class="clueMeta">Category • $200</div>
+          </div>
+        </div>
+
+        <div id="clueStage" class="clueStage">
+          <div id="clueText" class="clueText" aria-live="polite"></div>
+
+          <div id="progressWrap" class="progressWrap" aria-label="Buzz window">
+            <div class="progressTrack">
+              <div id="progressFill" class="progressFill"></div>
+            </div>
+            <div id="progressLabel" class="progressLabel">Buzz window: 5.0s</div>
+          </div>
+
+          <div id="clueActions" class="clueActions">
+            <button id="buzzBtn" class="btn btn--buzz" type="button">BUZZ</button>
+          </div>
+
+          <div id="revealWrap" class="revealWrap" hidden>
+            <div class="revealTitle">Correct response</div>
+            <div id="responseText" class="responseText"></div>
+
+            <div id="resultButtons" class="resultButtons" hidden>
+              <button id="gotItBtn" class="btn btn--good" type="button">Got it</button>
+              <button id="missedBtn" class="btn btn--bad" type="button">Missed</button>
+            </div>
+
+            <div id="backOnlyButtons" class="resultButtons" hidden>
+              <button id="backToBoardBtn" class="btn btn--primary" type="button">Back to Board</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Results view -->
+      <section id="resultsView" class="view" aria-label="Results">
+        <div class="resultsTop">
+          <div class="resultsTop__row">
+            <div class="resultsTitle">Results</div>
+            <button id="resultsNewBoardBtn" class="btn btn--primary" type="button">New Board</button>
+          </div>
+          <div id="resultsSummary" class="resultsSummary"></div>
+        </div>
+
+        <div class="resultsBody">
+          <div class="sectionTitle">Per-category performance</div>
+          <div id="categorySummary" class="categorySummary"></div>
+
+          <div class="sectionTitle">Review: missed &amp; skipped</div>
+          <div id="reviewFeed" class="reviewFeed" aria-label="Review feed"></div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Settings -->
+    <dialog id="settingsDialog" class="dialog" aria-label="Settings">
+      <form method="dialog" class="dialog__form" id="settingsForm">
+        <div class="dialog__header">
+          <div class="dialog__title">Settings</div>
+          <button id="closeSettingsBtn" class="iconbtn iconbtn--plain" type="submit" value="close" aria-label="Close settings" title="Close">
+            <span aria-hidden="true">✕</span>
+          </button>
+        </div>
+
+        <div class="dialog__body">
+          <div class="fieldset">
+            <div class="fieldset__title">Dataset import</div>
+            <div class="field">
+              <label class="label" for="datasetFile">Import TSV / CSV / JSON</label>
+              <input id="datasetFile" class="file" type="file" accept=".tsv,.csv,.json,text/tab-separated-values,text/csv,application/json,text/plain" />
+              <div class="help">TSV: jwolle1 clue dumps (air_date, round, category, clue_value, answer, question). CSV/JSON: normalized fields supported.</div>
+            </div>
+          </div>
+
+          <div class="fieldset">
+            <div class="fieldset__title">Reader</div>
+
+            <div class="toggles">
+              <label class="toggle">
+                <input id="useEleven" type="checkbox" />
+                <span>Use ElevenLabs (default)</span>
+              </label>
+
+              <label class="toggle">
+                <input id="useSystem" type="checkbox" />
+                <span>Use System Voice (fallback)</span>
+              </label>
+            </div>
+
+            <div class="field">
+              <label class="label" for="systemVoice">System voice</label>
+              <select id="systemVoice" class="select"></select>
+              <div class="help">Voice list depends on iOS. If empty, restart Safari or toggle “Use System Voice”.</div>
+            </div>
+
+            <details class="details">
+              <summary>Advanced (pre-filled)</summary>
+              <div class="advancedGrid">
+                <div class="field">
+                  <label class="label" for="elevenVoiceId">ElevenLabs Voice ID</label>
+                  <input id="elevenVoiceId" class="input" type="text" />
+                </div>
+                <div class="field">
+                  <label class="label" for="elevenModelId">Model ID</label>
+                  <input id="elevenModelId" class="input" type="text" />
+                </div>
+                <div class="field">
+                  <label class="label" for="elevenOutputFmt">Output format</label>
+                  <input id="elevenOutputFmt" class="input" type="text" />
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div class="fieldset">
+            <div class="fieldset__title">Timing</div>
+
+            <div class="grid2">
+              <div class="field">
+                <label class="label" for="buzzSeconds">Buzz window (seconds)</label>
+                <input id="buzzSeconds" class="input" type="number" min="1" max="15" step="0.5" inputmode="decimal" />
+                <div class="help">Countdown starts only after audio finishes.</div>
+              </div>
+
+              <div class="field">
+                <label class="label" for="blankMs">Blank screen (ms)</label>
+                <input id="blankMs" class="input" type="number" min="250" max="5000" step="50" inputmode="numeric" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dialog__footer">
+          <button id="saveSettingsBtn" class="btn btn--primary" type="button">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- iOS-safe fallback overlay -->
+    <div id="dialogFallback" class="dialogFallback" hidden>
+      <div class="dialogFallback__panel" role="dialog" aria-modal="true" aria-label="Settings">
+        <div class="dialog__header">
+          <div class="dialog__title">Settings</div>
+          <button id="fallbackCloseBtn" class="iconbtn iconbtn--plain" type="button" aria-label="Close settings" title="Close">
+            <span aria-hidden="true">✕</span>
+          </button>
+        </div>
+        <div class="dialogFallback__body" id="fallbackBody"></div>
+        <div class="dialog__footer">
+          <button id="fallbackSaveBtn" class="btn btn--primary" type="button">Save</button>
+        </div>
+      </div>
     </div>
 
-    <div class="topActions">
-      <button id="btnNewBoard" class="btn">New Board</button>
-      <button id="btnSettings" class="btn btnGhost" type="button">Settings</button>
-    </div>
-  </header>
+    <audio id="audioPlayer" class="hiddenAudio" playsinline></audio>
+  </div>
 
-  <main class="main">
-
-    <!-- BOARD VIEW -->
-    <section id="boardView" class="view">
-      <div class="boardControls">
-        <div class="control">
-          <div class="controlLabel">Categories</div>
-          <select id="categoriesCount" class="select">
-            <option value="3">3</option>
-            <option value="4" selected>4</option>
-            <option value="5">5</option>
-            <option value="6">6</option>
-          </select>
-        </div>
-
-        <div class="control">
-          <div class="controlLabel">Values</div>
-          <div class="pill">200 • 400 • 600 • 800 • 1000</div>
-        </div>
-
-        <div class="control grow">
-          <div id="statusLine" class="statusLine">Import a TSV in Settings, then tap New Board.</div>
-        </div>
-      </div>
-
-      <div id="board" class="board"></div>
-    </section>
-
-    <!-- CLUE VIEW -->
-    <section id="clueView" class="view hidden">
-      <div class="clueHeader">
-        <div>
-          <div id="clueCategory" class="clueCategory">CATEGORY</div>
-          <div id="clueValue" class="clueValue">$200</div>
-        </div>
-        <button id="btnBackToBoardTop" class="btn btnGhost" type="button">Back</button>
-      </div>
-
-      <div class="clueCard">
-        <div id="clueText" class="clueText"></div>
-
-        <div id="progressWrap" class="progressWrap hidden">
-          <div class="progressBar"><div id="progressFill" class="progressFill"></div></div>
-          <div id="progressLabel" class="progressLabel">Buzz window: 5.0s</div>
-        </div>
-
-        <button id="btnBuzz" class="btnBuzz hidden" aria-label="Buzz in" type="button">BUZZ</button>
-
-        <div id="blankScreen" class="blankScreen hidden"></div>
-
-        <div id="resultActions" class="resultActions hidden">
-          <button id="btnGotIt" class="btn btnGood" type="button">Got it</button>
-          <button id="btnMissed" class="btn btnBad" type="button">Missed</button>
-        </div>
-
-        <div id="noBuzzActions" class="noBuzzActions hidden">
-          <button id="btnBackToBoard" class="btn" type="button">Back to Board</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- RESULTS VIEW -->
-    <section id="resultsView" class="view hidden">
-      <div class="resultsTop">
-        <div class="resultsTitle">Board Results</div>
-        <button id="btnNewBoard2" class="btn" type="button">New Board</button>
-      </div>
-
-      <div id="resultsSummary" class="resultsSummary"></div>
-
-      <div class="feedTitle">Missed + Skipped Review</div>
-      <div id="feed" class="feed"></div>
-    </section>
-
-  </main>
-
-  <!-- SETTINGS -->
-  <dialog id="settingsModal" class="modal">
-    <form method="dialog" class="modalBody">
-      <div class="modalHeader">
-        <div class="modalTitle">Settings</div>
-        <button class="btn btnGhost" value="close" type="button">Close</button>
-      </div>
-
-      <div class="settingsGrid">
-        <div class="settingBlock">
-          <div class="settingTitle">Import dataset</div>
-          <input id="fileInput" type="file" accept=".tsv,.csv,.json,.txt" />
-          <div id="importStatus" class="importStatus">No import yet.</div>
-          <div class="hint">TSV supported: jwolle1 seasons/seasonXX.tsv format.</div>
-        </div>
-
-        <div class="settingBlock">
-          <div class="settingTitle">Reader</div>
-          <hr style="border:none;border-top:1px solid rgba(255,255,255,.10);margin:12px 0;">
-
-          <label class="row">
-            <input id="ttsToggle" type="checkbox" checked />
-            <span>Read clues aloud (system voice)</span>
-          </label>
-
-          <div class="row">
-            <span class="rowLabel">Voice</span>
-            <select id="voiceSelect" class="select"></select>
-          </div>
-
-          <hr style="border:none;border-top:1px solid rgba(255,255,255,.10);margin:14px 0;">
-
-          <label class="row">
-            <input id="elevenTtsToggle" type="checkbox" />
-            <span>Use ElevenLabs TTS (requires API key)</span>
-          </label>
-
-          <div class="row">
-            <span class="rowLabel">API key</span>
-            <input id="elevenApiKey" class="input" type="password" placeholder="••••••••" autocomplete="off" />
-          </div>
-
-          <div class="row">
-            <span class="rowLabel">Voice ID</span>
-            <input id="elevenVoiceId" class="input" type="text" placeholder="e.g., JBFqnCBsd6RMkjVDRZzb" autocomplete="off" />
-          </div>
-
-          <div class="row">
-            <span class="rowLabel">Model</span>
-            <select id="elevenModelSelect" class="select">
-              <option value="eleven_multilingual_v2" selected>eleven_multilingual_v2</option>
-            </select>
-          </div>
-
-          <div class="row">
-            <span class="rowLabel">Output</span>
-            <select id="elevenOutputFormat" class="select">
-              <option value="mp3_44100_128" selected>mp3_44100_128</option>
-              <option value="mp3_22050_32">mp3_22050_32</option>
-              <option value="pcm_24000">pcm_24000</option>
-              <option value="ulaw_8000">ulaw_8000</option>
-            </select>
-          </div>
-
-          <div class="hint">
-            Key is stored only in this browser’s local storage (not committed to GitHub). Requests still send the key from your phone to ElevenLabs.
-          </div>
-
-          <div class="hint">
-            If ElevenLabs is enabled and a key + voice ID are present, it will be used; otherwise the system voice is used.
-          </div>
-        </div>
-
-        <div class="settingBlock">
-          <div class="settingTitle">Timing</div>
-
-          <div class="row">
-            <span class="rowLabel">Buzz window (sec)</span>
-            <input id="buzzWindowSec" class="input" type="number" min="1" max="15" step="0.5" value="5" />
-          </div>
-
-          <div class="row">
-            <span class="rowLabel">Blank screen (ms)</span>
-            <input id="blankMs" class="input" type="number" min="250" max="5000" step="250" value="2000" />
-          </div>
-
-          <div class="hint">
-            Countdown starts only after reading finishes (TTS end + fallback estimate).
-          </div>
-        </div>
-
-        <div class="settingBlock">
-          <div class="settingTitle">Board rule</div>
-          <div class="hint">Board pulls Round 1 clues with values 200–1000.</div>
-        </div>
-      </div>
-    </form>
-  </dialog>
-
-  <script type="module" src="app.js?v=7"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
