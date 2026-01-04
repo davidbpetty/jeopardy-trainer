@@ -66,6 +66,10 @@ const ui = {
 
 const VALUES = [200, 400, 600, 800, 1000];
 
+/** iOS autoplay priming: must be called from a user gesture */
+const SILENT_WAV =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+
 const state = {
   bank: [],
 
@@ -88,8 +92,13 @@ const state = {
   openaiAudio: null,
 };
 
-function setStatus(msg) { ui.statusLine.textContent = msg; }
-function setScore(n) { state.score = n; ui.score.textContent = String(n); }
+function setStatus(msg) {
+  ui.statusLine.textContent = msg;
+}
+function setScore(n) {
+  state.score = n;
+  ui.score.textContent = String(n);
+}
 
 function showView(which) {
   ui.boardView.classList.add("hidden");
@@ -104,7 +113,9 @@ function clampNum(n, lo, hi, fallback) {
   return Math.max(lo, Math.min(hi, x));
 }
 
-function normalizeCategory(s) { return String(s || "UNKNOWN").trim(); }
+function normalizeCategory(s) {
+  return String(s || "UNKNOWN").trim();
+}
 
 function normalizeClueObj(x) {
   return {
@@ -124,24 +135,61 @@ function normalizeClueObj(x) {
 
 function parseDelimited(text, delimiter) {
   const rows = [];
-  let i = 0, field = "", row = [], inQuotes = false;
+  let i = 0,
+    field = "",
+    row = [],
+    inQuotes = false;
 
-  const pushField = () => { row.push(field); field = ""; };
-  const pushRow = () => { rows.push(row); row = []; };
+  const pushField = () => {
+    row.push(field);
+    field = "";
+  };
+  const pushRow = () => {
+    rows.push(row);
+    row = [];
+  };
 
   while (i < text.length) {
     const c = text[i];
 
     if (inQuotes) {
-      if (c === '"' && text[i + 1] === '"') { field += '"'; i += 2; continue; }
-      if (c === '"') { inQuotes = false; i++; continue; }
-      field += c; i++; continue;
+      if (c === '"' && text[i + 1] === '"') {
+        field += '"';
+        i += 2;
+        continue;
+      }
+      if (c === '"') {
+        inQuotes = false;
+        i++;
+        continue;
+      }
+      field += c;
+      i++;
+      continue;
     } else {
-      if (c === '"') { inQuotes = true; i++; continue; }
-      if (c === delimiter) { pushField(); i++; continue; }
-      if (c === "\n") { pushField(); pushRow(); i++; continue; }
-      if (c === "\r") { i++; continue; }
-      field += c; i++; continue;
+      if (c === '"') {
+        inQuotes = true;
+        i++;
+        continue;
+      }
+      if (c === delimiter) {
+        pushField();
+        i++;
+        continue;
+      }
+      if (c === "\n") {
+        pushField();
+        pushRow();
+        i++;
+        continue;
+      }
+      if (c === "\r") {
+        i++;
+        continue;
+      }
+      field += c;
+      i++;
+      continue;
     }
   }
 
@@ -152,33 +200,38 @@ function parseDelimited(text, delimiter) {
 
 function parseCSV(text) {
   const rows = parseDelimited(text, ",");
-  const header = (rows.shift() || []).map(h => h.trim());
+  const header = (rows.shift() || []).map((h) => h.trim());
   const idx = Object.fromEntries(header.map((h, j) => [h, j]));
   const get = (r, name) => r[idx[name]] ?? "";
 
   return rows
-    .filter(r => r.some(x => String(x).trim().length))
-    .map(r => normalizeClueObj({
-      id: get(r, "id") || crypto.randomUUID(),
-      round: get(r, "round") || "1",
-      category: get(r, "category") || "UNKNOWN",
-      value: parseInt(String(get(r, "value") || "0").replace(/[^0-9]/g, ""), 10) || 0,
-      clue: get(r, "clue") || "",
-      response: get(r, "response") || "",
-      subject_tags: String(get(r, "subject_tags") || "").split("|").map(s => s.trim()).filter(Boolean),
-      source_url: get(r, "source_url") || ""
-    }))
-    .filter(x => x.clue && x.response);
+    .filter((r) => r.some((x) => String(x).trim().length))
+    .map((r) =>
+      normalizeClueObj({
+        id: get(r, "id") || crypto.randomUUID(),
+        round: get(r, "round") || "1",
+        category: get(r, "category") || "UNKNOWN",
+        value: parseInt(String(get(r, "value") || "0").replace(/[^0-9]/g, ""), 10) || 0,
+        clue: get(r, "clue") || "",
+        response: get(r, "response") || "",
+        subject_tags: String(get(r, "subject_tags") || "")
+          .split("|")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        source_url: get(r, "source_url") || "",
+      })
+    )
+    .filter((x) => x.clue && x.response);
 }
 
 function parseJeopardyTSV(text) {
   const rows = parseDelimited(text, "\t");
-  const header = (rows.shift() || []).map(h => h.trim());
+  const header = (rows.shift() || []).map((h) => h.trim());
   const idx = Object.fromEntries(header.map((h, j) => [h, j]));
   const get = (r, name) => r[idx[name]] ?? "";
 
   return rows
-    .filter(r => r.some(x => String(x).trim().length))
+    .filter((r) => r.some((x) => String(x).trim().length))
     .map((r, k) => {
       const roundRaw = String(get(r, "round") || "").trim();
       const valueRaw = String(get(r, "clue_value") || "0");
@@ -191,19 +244,20 @@ function parseJeopardyTSV(text) {
         value,
         clue: get(r, "answer") || "",
         response: get(r, "question") || "",
-        air_date: get(r, "air_date") || ""
+        air_date: get(r, "air_date") || "",
       });
     })
-    .filter(x => x.clue && x.response);
+    .filter((x) => x.clue && x.response);
 }
 
 function detectTSVByContent(text) {
-  const firstLine = (text.split(/\r?\n/, 1)[0] || "");
-  return firstLine.includes("\t") && (
-    firstLine.includes("clue_value") ||
-    firstLine.includes("air_date") ||
-    firstLine.includes("answer") ||
-    firstLine.includes("question")
+  const firstLine = text.split(/\r?\n/, 1)[0] || "";
+  return (
+    firstLine.includes("\t") &&
+    (firstLine.includes("clue_value") ||
+      firstLine.includes("air_date") ||
+      firstLine.includes("answer") ||
+      firstLine.includes("question"))
   );
 }
 
@@ -231,7 +285,10 @@ function loadVoices() {
     const opt = document.createElement("option");
     opt.value = v.voiceURI;
     opt.textContent = `${v.name} — ${v.lang}${v.default ? " (default)" : ""}`;
-    if (v.voiceURI === saved) { opt.selected = true; found = true; }
+    if (v.voiceURI === saved) {
+      opt.selected = true;
+      found = true;
+    }
     ui.voiceSelect.appendChild(opt);
   }
 
@@ -246,16 +303,21 @@ function loadVoices() {
 function getSelectedVoice() {
   const uri = state.selectedVoiceURI;
   if (!uri) return null;
-  return cachedVoices.find(v => v.voiceURI === uri) || null;
+  return cachedVoices.find((v) => v.voiceURI === uri) || null;
 }
 
 function estimateSpeechMs(text) {
-  const words = String(text || "").trim().split(/\s+/).filter(Boolean).length;
+  const words = String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
   const ms = Math.round(words * 420);
   return clampNum(ms, 1200, 15000, 6000);
 }
 
-function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+function delay(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 async function waitForSpeechSynthesisToFinish(maxMs) {
   if (!("speechSynthesis" in window)) return;
@@ -270,7 +332,9 @@ async function speakSystemAsync(text) {
   if (!ui.ttsToggle.checked) return;
   if (!("speechSynthesis" in window)) return;
 
-  try { window.speechSynthesis.cancel(); } catch {}
+  try {
+    window.speechSynthesis.cancel();
+  } catch {}
 
   const estimated = estimateSpeechMs(text);
 
@@ -280,14 +344,19 @@ async function speakSystemAsync(text) {
     if (v) u.voice = v;
 
     let done = false;
-    const finish = () => { if (!done) { done = true; resolve(); } };
-
-    u.onend = finish;
-    u.onerror = finish;
+    const finish = () => {
+      if (!done) {
+        done = true;
+        resolve();
+      }
+    };
 
     const hard = window.setTimeout(finish, estimated + 1200);
 
-    const wrappedFinish = () => { window.clearTimeout(hard); finish(); };
+    const wrappedFinish = () => {
+      window.clearTimeout(hard);
+      finish();
+    };
     u.onend = wrappedFinish;
     u.onerror = wrappedFinish;
 
@@ -300,54 +369,84 @@ async function speakSystemAsync(text) {
 function getOpenAISettings() {
   const enabled = ui.openaiTtsToggle ? ui.openaiTtsToggle.checked : false;
   const key = ui.openaiApiKey ? (ui.openaiApiKey.value || "").trim() : "";
-  const voice = ui.openaiVoiceSelect ? (ui.openaiVoiceSelect.value || "alloy") : "alloy";
+  const voice = ui.openaiVoiceSelect ? ui.openaiVoiceSelect.value || "alloy" : "alloy";
   return { enabled, key, voice };
+}
+
+/**
+ * iOS Safari blocks audio play if it is not user-initiated.
+ * Prime the audio element during a user gesture (board cell tap) so later playback works.
+ */
+function primeOpenAIAudioOnce() {
+  if (!state.openaiAudio) state.openaiAudio = new Audio();
+  const a = state.openaiAudio;
+  a.playsInline = true;
+
+  if (a.__primed) return;
+  a.__primed = true;
+
+  a.muted = true;
+  a.src = SILENT_WAV;
+
+  a.play()
+    .then(() => {
+      a.pause();
+      a.currentTime = 0;
+      a.muted = false;
+    })
+    .catch(() => {
+      a.muted = false;
+    });
 }
 
 async function speakOpenAIAsync(text) {
   const { enabled, key, voice } = getOpenAISettings();
-  if (!enabled) return false;
-  if (!key) return false;
+  if (!enabled || !key) return false;
 
   try {
     if (!state.openaiAudio) state.openaiAudio = new Audio();
+    const a = state.openaiAudio;
+    a.playsInline = true;
 
     const res = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${key}`,
+        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         model: "gpt-4o-mini-tts",
         voice,
         input: text,
-        format: "aac",
+        response_format: "aac",
       }),
     });
 
     if (!res.ok) {
       const t = await res.text().catch(() => "");
-      throw new Error(`OpenAI TTS HTTP ${res.status}: ${t.slice(0, 200)}`);
+      throw new Error(`HTTP ${res.status}: ${t.slice(0, 300)}`);
     }
 
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
 
-    try { window.speechSynthesis?.cancel?.(); } catch {}
+    try {
+      window.speechSynthesis?.cancel?.();
+    } catch {}
 
     await new Promise((resolve, reject) => {
-      const a = state.openaiAudio;
-      a.onended = () => resolve();
+      a.onended = resolve;
       a.onerror = () => reject(new Error("Audio playback failed"));
       a.src = url;
       a.currentTime = 0;
-      a.play().then(() => {}).catch(reject);
+      a.play().catch(reject);
     });
 
     URL.revokeObjectURL(url);
     return true;
-  } catch {
+  } catch (e) {
+    console.error("OpenAI TTS failed:", e);
+    setStatus(`OpenAI TTS failed; using system voice. ${String(e).slice(0, 140)}`);
     return false;
   }
 }
@@ -361,8 +460,10 @@ async function speakAsync(text) {
 /* ---------------- Board building ---------------- */
 
 function eligibleForBoard(c) {
-  const r = String(c.round || "").trim().toUpperCase();
-  const isJ = (r === "1" || r === "J" || r === "JEOPARDY");
+  const r = String(c.round || "")
+    .trim()
+    .toUpperCase();
+  const isJ = r === "1" || r === "J" || r === "JEOPARDY";
   const vOK = VALUES.includes(Number(c.value || 0));
   return isJ && vOK && c.clue && c.response;
 }
@@ -397,7 +498,7 @@ function buildBoard() {
 
   const completeCats = [];
   for (const [cat, m] of grouped.entries()) {
-    const ok = VALUES.every(v => (m.get(v) || []).length > 0);
+    const ok = VALUES.every((v) => (m.get(v) || []).length > 0);
     if (ok) completeCats.push(cat);
   }
 
@@ -489,7 +590,10 @@ function markCellUsed(catIndex, value) {
 /* ---------------- Clue flow ---------------- */
 
 function cancelRAF() {
-  if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = null; }
+  if (state.rafId) {
+    cancelAnimationFrame(state.rafId);
+    state.rafId = null;
+  }
 }
 
 function resetClueUI() {
@@ -510,6 +614,10 @@ function openClue(catIndex, value) {
 
   state.active = { catIndex, value, clueObj };
 
+  // Prime OpenAI audio on a user gesture so iOS will later allow playback
+  const { enabled, key } = getOpenAISettings();
+  if (enabled && key) primeOpenAIAudioOnce();
+
   ui.clueCategory.textContent = cat.name;
   ui.clueValue.textContent = `$${value}`;
   ui.clueText.textContent = clueObj.clue;
@@ -517,7 +625,7 @@ function openClue(catIndex, value) {
   resetClueUI();
   showView(ui.clueView);
 
-  runClueFlow(clueObj).catch(err => {
+  runClueFlow(clueObj).catch((err) => {
     ui.clueText.textContent = `Error: ${String(err)}`;
     ui.noBuzzActions.classList.remove("hidden");
   });
@@ -581,7 +689,7 @@ function revealNoBuzz() {
     cat: state.boardCats[catIndex].name,
     value,
     clue: clueObj.clue,
-    response: clueObj.response
+    response: clueObj.response,
   });
 
   ui.noBuzzActions.classList.remove("hidden");
@@ -622,7 +730,7 @@ function finalizeBuzzResult(gotIt) {
     cat: state.boardCats[catIndex].name,
     value,
     clue: clueObj.clue,
-    response: clueObj.response
+    response: clueObj.response,
   });
 
   markCellUsed(catIndex, value);
@@ -637,20 +745,24 @@ function finalizeBuzzResult(gotIt) {
 
 function endBoard() {
   cancelRAF();
-  try { window.speechSynthesis?.cancel?.(); } catch {}
+  try {
+    window.speechSynthesis?.cancel?.();
+  } catch {}
   showView(ui.resultsView);
   renderResults();
   setStatus("Round complete.");
 }
 
-function pct(n, d) { return d ? `${Math.round((n / d) * 100)}%` : "0%"; }
+function pct(n, d) {
+  return d ? `${Math.round((n / d) * 100)}%` : "0%";
+}
 
 function renderResults() {
   const total = state.totalCells;
-  const buzzed = state.outcomes.filter(o => o.status === "correct" || o.status === "wrong").length;
-  const correct = state.outcomes.filter(o => o.status === "correct").length;
-  const wrong = state.outcomes.filter(o => o.status === "wrong").length;
-  const skipped = state.outcomes.filter(o => o.status === "skipped").length;
+  const buzzed = state.outcomes.filter((o) => o.status === "correct" || o.status === "wrong").length;
+  const correct = state.outcomes.filter((o) => o.status === "correct").length;
+  const wrong = state.outcomes.filter((o) => o.status === "wrong").length;
+  const skipped = state.outcomes.filter((o) => o.status === "skipped").length;
 
   const byCat = new Map();
   for (const o of state.outcomes) {
@@ -662,11 +774,13 @@ function renderResults() {
     if (o.status === "skipped") s.skipped += 1;
   }
 
-  const catCards = [...byCat.entries()].map(([cat, s]) => {
-    const attempted = s.correct + s.wrong;
-    const acc = attempted ? (s.correct / attempted) : 0;
-    return { cat, ...s, attempted, acc };
-  }).sort((a, b) => a.acc - b.acc);
+  const catCards = [...byCat.entries()]
+    .map(([cat, s]) => {
+      const attempted = s.correct + s.wrong;
+      const acc = attempted ? s.correct / attempted : 0;
+      return { cat, ...s, attempted, acc };
+    })
+    .sort((a, b) => a.acc - b.acc);
 
   ui.resultsSummary.innerHTML = `
     <div class="sumGrid">
@@ -686,18 +800,23 @@ function renderResults() {
         <div class="sumTitle">Skipped</div>
         <div class="sumMeta">${skipped} revealed, no buzz</div>
       </div>
-      ${catCards.slice(0, 8).map(c => `
+      ${catCards
+        .slice(0, 8)
+        .map(
+          (c) => `
         <div class="sumCard">
           <div class="sumTitle">${escapeHtml(c.cat)}</div>
           <div class="sumMeta">
             Accuracy ${pct(c.correct, c.attempted)} • Attempted ${c.attempted} • Skipped ${c.skipped}
           </div>
         </div>
-      `).join("")}
+      `
+        )
+        .join("")}
     </div>
   `;
 
-  const review = state.outcomes.filter(o => o.status === "wrong" || o.status === "skipped");
+  const review = state.outcomes.filter((o) => o.status === "wrong" || o.status === "skipped");
   ui.feed.innerHTML = "";
   for (const item of review) ui.feed.appendChild(renderReviewCard(item));
 
@@ -772,7 +891,7 @@ function loadSettingsToUI() {
   ui.buzzWindowSec.value = localStorage.getItem("jt_buzz_window_sec") || "5";
   ui.blankMs.value = localStorage.getItem("jt_blank_ms") || "2000";
 
-  if (ui.openaiTtsToggle) ui.openaiTtsToggle.checked = (localStorage.getItem("jt_openai_tts_enabled") === "1");
+  if (ui.openaiTtsToggle) ui.openaiTtsToggle.checked = localStorage.getItem("jt_openai_tts_enabled") === "1";
   if (ui.openaiApiKey) ui.openaiApiKey.value = localStorage.getItem("jt_openai_api_key") || "";
   if (ui.openaiVoiceSelect) ui.openaiVoiceSelect.value = localStorage.getItem("jt_openai_voice") || "alloy";
 }
@@ -799,7 +918,11 @@ function closeSettings() {
   if (!d) return;
 
   if (typeof d.close === "function") {
-    try { d.close(); } catch { d.removeAttribute("open"); }
+    try {
+      d.close();
+    } catch {
+      d.removeAttribute("open");
+    }
   } else {
     d.removeAttribute("open");
   }
@@ -829,8 +952,12 @@ ui.voiceSelect.addEventListener("change", () => {
   localStorage.setItem("jt_voice_uri", ui.voiceSelect.value || "");
 });
 
-ui.buzzWindowSec.addEventListener("change", () => { applySettingsFromUI(); });
-ui.blankMs.addEventListener("change", () => { applySettingsFromUI(); });
+ui.buzzWindowSec.addEventListener("change", () => {
+  applySettingsFromUI();
+});
+ui.blankMs.addEventListener("change", () => {
+  applySettingsFromUI();
+});
 
 if (ui.openaiTtsToggle) ui.openaiTtsToggle.addEventListener("change", applySettingsFromUI);
 if (ui.openaiApiKey) ui.openaiApiKey.addEventListener("change", applySettingsFromUI);
@@ -838,12 +965,21 @@ if (ui.openaiVoiceSelect) ui.openaiVoiceSelect.addEventListener("change", applyS
 
 ui.btnNewBoard.addEventListener("click", () => {
   applySettingsFromUI();
-  try { buildBoard(); } catch (e) { setStatus(String(e)); }
+  try {
+    buildBoard();
+  } catch (e) {
+    setStatus(String(e));
+  }
 });
 
 ui.btnNewBoard2.addEventListener("click", () => {
   applySettingsFromUI();
-  try { buildBoard(); } catch (e) { setStatus(String(e)); showView(ui.boardView); }
+  try {
+    buildBoard();
+  } catch (e) {
+    setStatus(String(e));
+    showView(ui.boardView);
+  }
 });
 
 ui.btnBackToBoardTop.addEventListener("click", () => {
@@ -856,7 +992,7 @@ ui.btnBackToBoardTop.addEventListener("click", () => {
       cat: state.boardCats[catIndex].name,
       value,
       clue: clueObj.clue,
-      response: clueObj.response
+      response: clueObj.response,
     });
 
     markCellUsed(catIndex, value);
@@ -881,7 +1017,7 @@ ui.fileInput.addEventListener("change", async (e) => {
     if (name.endsWith(".json")) {
       const arr = JSON.parse(text);
       if (!Array.isArray(arr)) throw new Error("JSON must be an array");
-      cleaned = arr.map(normalizeClueObj).filter(x => x.clue && x.response);
+      cleaned = arr.map(normalizeClueObj).filter((x) => x.clue && x.response);
     } else if (looksTSV) {
       cleaned = parseJeopardyTSV(text);
     } else {
