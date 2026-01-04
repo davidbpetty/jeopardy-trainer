@@ -63,7 +63,9 @@
         <div id="clueText" class="clueText"></div>
 
         <div id="progressWrap" class="progressWrap hidden">
-          <div class="progressBar"><div id="progressFill" class="progressFill"></div></div>
+          <div class="progressBar">
+            <div id="progressFill" class="progressFill"></div>
+          </div>
           <div id="progressLabel" class="progressLabel">Buzz window: 5.0s</div>
         </div>
 
@@ -115,40 +117,8 @@
 
         <div class="settingBlock">
           <div class="settingTitle">Reader</div>
-          <hr style="border:none;border-top:1px solid rgba(255,255,255,.10);margin:12px 0;">
 
-<label class="row">
-  <input id="openaiTtsToggle" type="checkbox" />
-  <span>Use OpenAI TTS (requires API key)</span>
-</label>
-
-<div class="row">
-  <span class="rowLabel">API key</span>
-  <input id="openaiApiKey" class="input" type="password" placeholder="sk-..." autocomplete="off" />
-</div>
-
-<div class="row">
-  <span class="rowLabel">OpenAI voice</span>
-  <select id="openaiVoiceSelect" class="select">
-    <option value="alloy">alloy</option>
-    <option value="ash">ash</option>
-    <option value="ballad">ballad</option>
-    <option value="coral">coral</option>
-    <option value="echo">echo</option>
-    <option value="fable">fable</option>
-    <option value="onyx">onyx</option>
-    <option value="nova">nova</option>
-    <option value="sage">sage</option>
-    <option value="shimmer">shimmer</option>
-    <option value="verse">verse</option>
-    <option value="marin">marin</option>
-    <option value="cedar">cedar</option>
-  </select>
-</div>
-
-<div class="hint">
-  Key is stored only in this browser’s local storage (not committed to GitHub). Requests still send the key from your phone to OpenAI.
-</div>
+          <!-- System voice -->
           <label class="row">
             <input id="ttsToggle" type="checkbox" checked />
             <span>Read clues aloud (system voice)</span>
@@ -159,8 +129,44 @@
             <select id="voiceSelect" class="select"></select>
           </div>
 
+          <hr style="border:none;border-top:1px solid rgba(255,255,255,.10);margin:12px 0;">
+
+          <!-- OpenAI TTS -->
+          <label class="row">
+            <input id="openaiTtsToggle" type="checkbox" />
+            <span>Use OpenAI TTS (requires API key)</span>
+          </label>
+
+          <div class="row">
+            <span class="rowLabel">API key</span>
+            <input id="openaiApiKey" class="input" type="password" placeholder="sk-..." autocomplete="off" />
+          </div>
+
+          <div class="row">
+            <span class="rowLabel">OpenAI voice</span>
+            <select id="openaiVoiceSelect" class="select">
+              <option value="alloy">alloy</option>
+              <option value="ash">ash</option>
+              <option value="ballad">ballad</option>
+              <option value="coral">coral</option>
+              <option value="echo">echo</option>
+              <option value="fable">fable</option>
+              <option value="onyx">onyx</option>
+              <option value="nova">nova</option>
+              <option value="sage">sage</option>
+              <option value="shimmer">shimmer</option>
+              <option value="verse">verse</option>
+              <option value="marin">marin</option>
+              <option value="cedar">cedar</option>
+            </select>
+          </div>
+
           <div class="hint">
-            ChatGPT-like voices require OpenAI Audio/TTS via API. Do not place API keys in browser apps.
+            Key is stored only in this browser's local storage (not committed to GitHub). Requests still send the key from your phone to OpenAI.
+          </div>
+
+          <div class="hint">
+            If OpenAI TTS is enabled and a key is present, it will be used; otherwise the system voice is used.
           </div>
         </div>
 
