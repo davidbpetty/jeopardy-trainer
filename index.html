@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Jeopardy Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
   <header class="topbar">
@@ -17,7 +17,7 @@
 
     <div class="topActions">
       <button id="btnNewBoard" class="btn">New Board</button>
-      <button id="btnSettings" class="btn btnGhost">Settings</button>
+      <button id="btnSettings" class="btn btnGhost" type="button">Settings</button>
     </div>
   </header>
 
@@ -56,30 +56,28 @@
           <div id="clueCategory" class="clueCategory">CATEGORY</div>
           <div id="clueValue" class="clueValue">$200</div>
         </div>
-        <button id="btnBackToBoardTop" class="btn btnGhost">Back</button>
+        <button id="btnBackToBoardTop" class="btn btnGhost" type="button">Back</button>
       </div>
 
       <div class="clueCard">
         <div id="clueText" class="clueText"></div>
 
         <div id="progressWrap" class="progressWrap hidden">
-          <div class="progressBar">
-            <div id="progressFill" class="progressFill"></div>
-          </div>
+          <div class="progressBar"><div id="progressFill" class="progressFill"></div></div>
           <div id="progressLabel" class="progressLabel">Buzz window: 5.0s</div>
         </div>
 
-        <button id="btnBuzz" class="btnBuzz hidden" aria-label="Buzz in">BUZZ</button>
+        <button id="btnBuzz" class="btnBuzz hidden" aria-label="Buzz in" type="button">BUZZ</button>
 
         <div id="blankScreen" class="blankScreen hidden"></div>
 
         <div id="resultActions" class="resultActions hidden">
-          <button id="btnGotIt" class="btn btnGood">Got it</button>
-          <button id="btnMissed" class="btn btnBad">Missed</button>
+          <button id="btnGotIt" class="btn btnGood" type="button">Got it</button>
+          <button id="btnMissed" class="btn btnBad" type="button">Missed</button>
         </div>
 
         <div id="noBuzzActions" class="noBuzzActions hidden">
-          <button id="btnBackToBoard" class="btn">Back to Board</button>
+          <button id="btnBackToBoard" class="btn" type="button">Back to Board</button>
         </div>
       </div>
     </section>
@@ -88,7 +86,7 @@
     <section id="resultsView" class="view hidden">
       <div class="resultsTop">
         <div class="resultsTitle">Board Results</div>
-        <button id="btnNewBoard2" class="btn">New Board</button>
+        <button id="btnNewBoard2" class="btn" type="button">New Board</button>
       </div>
 
       <div id="resultsSummary" class="resultsSummary"></div>
@@ -104,7 +102,7 @@
     <form method="dialog" class="modalBody">
       <div class="modalHeader">
         <div class="modalTitle">Settings</div>
-        <button class="btn btnGhost" value="close">Close</button>
+        <button class="btn btnGhost" value="close" type="button">Close</button>
       </div>
 
       <div class="settingsGrid">
@@ -117,8 +115,8 @@
 
         <div class="settingBlock">
           <div class="settingTitle">Reader</div>
+          <hr style="border:none;border-top:1px solid rgba(255,255,255,.10);margin:12px 0;">
 
-          <!-- System voice -->
           <label class="row">
             <input id="ttsToggle" type="checkbox" checked />
             <span>Read clues aloud (system voice)</span>
@@ -129,44 +127,46 @@
             <select id="voiceSelect" class="select"></select>
           </div>
 
-          <hr style="border:none;border-top:1px solid rgba(255,255,255,.10);margin:12px 0;">
+          <hr style="border:none;border-top:1px solid rgba(255,255,255,.10);margin:14px 0;">
 
-          <!-- OpenAI TTS -->
           <label class="row">
-            <input id="openaiTtsToggle" type="checkbox" />
-            <span>Use OpenAI TTS (requires API key)</span>
+            <input id="elevenTtsToggle" type="checkbox" />
+            <span>Use ElevenLabs TTS (requires API key)</span>
           </label>
 
           <div class="row">
             <span class="rowLabel">API key</span>
-            <input id="openaiApiKey" class="input" type="password" placeholder="sk-..." autocomplete="off" />
+            <input id="elevenApiKey" class="input" type="password" placeholder="••••••••" autocomplete="off" />
           </div>
 
           <div class="row">
-            <span class="rowLabel">OpenAI voice</span>
-            <select id="openaiVoiceSelect" class="select">
-              <option value="alloy">alloy</option>
-              <option value="ash">ash</option>
-              <option value="ballad">ballad</option>
-              <option value="coral">coral</option>
-              <option value="echo">echo</option>
-              <option value="fable">fable</option>
-              <option value="onyx">onyx</option>
-              <option value="nova">nova</option>
-              <option value="sage">sage</option>
-              <option value="shimmer">shimmer</option>
-              <option value="verse">verse</option>
-              <option value="marin">marin</option>
-              <option value="cedar">cedar</option>
+            <span class="rowLabel">Voice ID</span>
+            <input id="elevenVoiceId" class="input" type="text" placeholder="e.g., JBFqnCBsd6RMkjVDRZzb" autocomplete="off" />
+          </div>
+
+          <div class="row">
+            <span class="rowLabel">Model</span>
+            <select id="elevenModelSelect" class="select">
+              <option value="eleven_multilingual_v2" selected>eleven_multilingual_v2</option>
+            </select>
+          </div>
+
+          <div class="row">
+            <span class="rowLabel">Output</span>
+            <select id="elevenOutputFormat" class="select">
+              <option value="mp3_44100_128" selected>mp3_44100_128</option>
+              <option value="mp3_22050_32">mp3_22050_32</option>
+              <option value="pcm_24000">pcm_24000</option>
+              <option value="ulaw_8000">ulaw_8000</option>
             </select>
           </div>
 
           <div class="hint">
-            Key is stored only in this browser's local storage (not committed to GitHub). Requests still send the key from your phone to OpenAI.
+            Key is stored only in this browser’s local storage (not committed to GitHub). Requests still send the key from your phone to ElevenLabs.
           </div>
 
           <div class="hint">
-            If OpenAI TTS is enabled and a key is present, it will be used; otherwise the system voice is used.
+            If ElevenLabs is enabled and a key + voice ID are present, it will be used; otherwise the system voice is used.
           </div>
         </div>
 
@@ -184,7 +184,7 @@
           </div>
 
           <div class="hint">
-            Countdown starts only after reading finishes (speech end event + fallback estimate).
+            Countdown starts only after reading finishes (TTS end + fallback estimate).
           </div>
         </div>
 
@@ -196,6 +196,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="app.js?v=3"></script>
+  <script type="module" src="app.js?v=7"></script>
 </body>
 </html>
