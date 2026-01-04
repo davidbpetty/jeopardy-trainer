@@ -1,671 +1,124 @@
-// Jeopardy Trainer (Local Demo)
-// - Tap-to-buzz with a 5s timer (configurable)
-// - Read clue aloud via Web Speech API (toggle)
-// - On buzz: screen blanks for 2s, then reveals correct response
-// - User marks Correct/Wrong: score +/- value
-// - Post-round: per-category stats + “TikTok-like” vertical learning feed
-// - Next round mixes weak-topic review with new categories
-//
-// Import support:
-// - CSV (your custom schema): id,round,category,value,clue,response,subject_tags,source_url
-// - TSV (jwolle1 seasons dataset schema): round, clue_value, daily_double_value, category, comments, answer, question, air_date, notes
-//
-// NOTE: No real Jeopardy clues included by default. Import your own datasets.
+/* Jeopardy Trainer — Board Mode
+   - Full board: N categories x 5 values
+   - Random category picked from TSV; one random clue per value in that category
+   - Countdown starts ONLY after TTS finishes reading clue
+   - Buzz within window => blank screen => reveal => Got it / Missed (score +/- value)
+   - No buzz => reveal => Back to board (no score change)
+   - Used clues removed from board
+   - End => stats + missed/skipped review cards
+
+   Import:
+   - TSV jwolle1: round, clue_value, daily_double_value, category, comments, answer, question, air_date, notes
+   - CSV custom: id,round,category,value,clue,response,subject_tags,source_url
+   - JSON array: id,round,category,value,clue,response,subject_tags,source_url
+*/
 
 const $ = (id) => document.getElementById(id);
 
 const ui = {
   score: $("score"),
-  clueIndex: $("clueIndex"),
-  clueTotal: $("clueTotal"),
-  timeLeft: $("timeLeft"),
-  category: $("category"),
-  value: $("value"),
-  roundName: $("roundName"),
-  hint: $("hint"),
-  clueCard: $("clueCard"),
-  clueText: $("clueText"),
-  blankOverlay: $("blankOverlay"),
-  btnStart: $("btnStart"),
-  btnSkip: $("btnSkip"),
-  btnCorrect: $("btnCorrect"),
-  btnWrong: $("btnWrong"),
-  ttsToggle: $("ttsToggle"),
-  timeLimit: $("timeLimit"),
-  blankTime: $("blankTime"),
-
-  gameView: $("gameView"),
-  learnView: $("learnView"),
-  summary: $("summary"),
-  feed: $("feed"),
-  btnNextRound: $("btnNextRound"),
-
+  btnNewBoard: $("btnNewBoard"),
+  btnNewBoard2: $("btnNewBoard2"),
   btnSettings: $("btnSettings"),
   settingsModal: $("settingsModal"),
+
+  boardView: $("boardView"),
+  board: $("board"),
+  statusLine: $("statusLine"),
+  categoriesCount: $("categoriesCount"),
+
+  clueView: $("clueView"),
+  clueCategory: $("clueCategory"),
+  clueValue: $("clueValue"),
+  clueText: $("clueText"),
+  btnBackToBoardTop: $("btnBackToBoardTop"),
+
+  progressWrap: $("progressWrap"),
+  progressFill: $("progressFill"),
+  progressLabel: $("progressLabel"),
+  btnBuzz: $("btnBuzz"),
+  blankScreen: $("blankScreen"),
+  resultActions: $("resultActions"),
+  btnGotIt: $("btnGotIt"),
+  btnMissed: $("btnMissed"),
+  noBuzzActions: $("noBuzzActions"),
+  btnBackToBoard: $("btnBackToBoard"),
+
+  resultsView: $("resultsView"),
+  resultsSummary: $("resultsSummary"),
+  feed: $("feed"),
+
   fileInput: $("fileInput"),
-  btnLoadSample: $("btnLoadSample"),
   importStatus: $("importStatus"),
-  openaiKey: $("openaiKey"),
-  openaiModel: $("openaiModel"),
-  aiEnable: $("aiEnable"),
-  roundLen: $("roundLen"),
-  reviewRatio: $("reviewRatio"),
+
+  ttsToggle: $("ttsToggle"),
+  voiceSelect: $("voiceSelect"),
+  buzzWindowSec: $("buzzWindowSec"),
+  blankMs: $("blankMs"),
 };
 
-const SAMPLE_BANK = [
-  {
-    id: "s1",
-    round: "J",
-    category: "MYTHOLOGY (ORIGINAL)",
-    value: 200,
-    clue: "In Greek myth, this messenger god is known for winged sandals and carrying a caduceus.",
-    response: "Who is Hermes?",
-    subject_tags: ["Mythology", "Greece"],
-    source_url: ""
-  },
-  {
-    id: "s2",
-    round: "J",
-    category: "SHAKESPEARE (ORIGINAL)",
-    value: 400,
-    clue: "‘To be, or not to be’ comes from this tragedy.",
-    response: "What is Hamlet?",
-    subject_tags: ["Shakespeare", "Drama"],
-    source_url: ""
-  },
-  {
-    id: "s3",
-    round: "J",
-    category: "U.S. GEOGRAPHY (ORIGINAL)",
-    value: 600,
-    clue: "This river forms much of the border between New York and Pennsylvania.",
-    response: "What is the Delaware River?",
-    subject_tags: ["Geography", "US"],
-    source_url: ""
-  },
-  {
-    id: "s4",
-    round: "J",
-    category: "WORLD CAPITALS (ORIGINAL)",
-    value: 800,
-    clue: "This capital city sits on the River Seine.",
-    response: "What is Paris?",
-    subject_tags: ["Geography", "Capitals"],
-    source_url: ""
-  },
-  {
-    id: "s5",
-    round: "J",
-    category: "SCIENCE BASICS (ORIGINAL)",
-    value: 1000,
-    clue: "This is the chemical symbol for sodium.",
-    response: "What is Na?",
-    subject_tags: ["Science", "Chemistry"],
-    source_url: ""
-  },
-  {
-    id: "s6",
-    round: "J",
-    category: "MYTHOLOGY (ORIGINAL)",
-    value: 400,
-    clue: "In Norse myth, this hammer belongs to Thor.",
-    response: "What is Mjölnir?",
-    subject_tags: ["Mythology", "Norse"],
-    source_url: ""
-  },
-  {
-    id: "s7",
-    round: "J",
-    category: "SHAKESPEARE (ORIGINAL)",
-    value: 600,
-    clue: "The lovers Romeo and Juliet are from this Italian city.",
-    response: "What is Verona?",
-    subject_tags: ["Shakespeare", "Italy"],
-    source_url: ""
-  },
-  {
-    id: "s8",
-    round: "J",
-    category: "HISTORY (ORIGINAL)",
-    value: 800,
-    clue: "The Magna Carta was sealed in this year (within 5 years is acceptable).",
-    response: "What is 1215?",
-    subject_tags: ["History", "England"],
-    source_url: ""
-  }
-];
+const VALUES = [200, 400, 600, 800, 1000];
 
 const state = {
-  bank: [...SAMPLE_BANK],
-  round: 1,
-  roundQueue: [],
-  current: null,
+  bank: [],
+
+  boardCats: [], // [{ name, cluesByValue: Map(value -> clueObj), usedValues:Set }]
+  usedCount: 0,
+  totalCells: 0,
+
+  active: null, // { catIndex, value, clueObj }
+
   score: 0,
-  timerId: null,
-  t0: 0,
-  timeLimitSec: 5,
+  outcomes: [], // { status: "correct"|"wrong"|"skipped", cat, value, clue, response }
+
+  rafId: null,
+  buzzDeadline: 0,
+
+  selectedVoiceURI: null,
+  buzzWindowMs: 5000,
   blankMs: 2000,
-  phase: "idle", // idle | showing | buzzed | revealed
-  stats: {
-    // category -> {correct, wrong, total, tags:Set}
-  },
-  answeredThisRound: 0,
-  totalThisRound: 0,
-  lastWeakTopics: [],
 };
 
-function normalizeCategory(s) {
-  return (s || "UNKNOWN").trim();
+function setStatus(msg) { ui.statusLine.textContent = msg; }
+function setScore(n) { state.score = n; ui.score.textContent = String(n); }
+
+function showView(which) {
+  ui.boardView.classList.add("hidden");
+  ui.clueView.classList.add("hidden");
+  ui.resultsView.classList.add("hidden");
+  which.classList.remove("hidden");
 }
 
-function speak(text) {
-  if (!ui.ttsToggle?.checked) return;
-  if (!("speechSynthesis" in window)) return;
-
-  window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.rate = 1.0;
-  u.pitch = 1.0;
-  u.volume = 1.0;
-  window.speechSynthesis.speak(u);
+function clampNum(n, lo, hi, fallback) {
+  const x = Number(n);
+  if (Number.isNaN(x)) return fallback;
+  return Math.max(lo, Math.min(hi, x));
 }
 
-function fmtPct(n) {
-  return `${Math.round(n * 100)}%`;
-}
+function normalizeCategory(s) { return String(s || "UNKNOWN").trim(); }
 
-function setPhase(phase) {
-  state.phase = phase;
-
-  if (phase === "idle") {
-    ui.btnSkip.disabled = true;
-    ui.btnCorrect.disabled = true;
-    ui.btnWrong.disabled = true;
-    ui.hint.textContent = "Press “Start Round”";
-  }
-  if (phase === "showing") {
-    ui.btnSkip.disabled = false;
-    ui.btnCorrect.disabled = true;
-    ui.btnWrong.disabled = true;
-    ui.hint.textContent = "Tap anywhere to buzz when you know it";
-  }
-  if (phase === "buzzed") {
-    ui.btnSkip.disabled = true;
-    ui.btnCorrect.disabled = true;
-    ui.btnWrong.disabled = true;
-    ui.hint.textContent = "Answer silently (blank screen)";
-  }
-  if (phase === "revealed") {
-    ui.btnSkip.disabled = true;
-    ui.btnCorrect.disabled = false;
-    ui.btnWrong.disabled = false;
-    ui.hint.textContent = "Mark correct / wrong";
-  }
-}
-
-function stopTimer() {
-  if (state.timerId) {
-    cancelAnimationFrame(state.timerId);
-    state.timerId = null;
-  }
-}
-
-function startTimer() {
-  stopTimer();
-  state.t0 = performance.now();
-
-  const tick = () => {
-    const elapsed = (performance.now() - state.t0) / 1000;
-    const left = Math.max(0, state.timeLimitSec - elapsed);
-    ui.timeLeft.textContent = left.toFixed(1);
-
-    if (left <= 0 && state.phase === "showing") {
-      // Time's up: reveal without buzz
-      revealAnswer(false);
-      return;
-    }
-    state.timerId = requestAnimationFrame(tick);
-  };
-
-  state.timerId = requestAnimationFrame(tick);
-}
-
-function updateHeaderForClue(clue) {
-  ui.category.textContent = normalizeCategory(clue.category);
-  ui.value.textContent = `$${clue.value}`;
-  ui.roundName.textContent = `Round ${state.round}`;
-}
-
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-function clampInt(n, lo, hi) {
-  if (Number.isNaN(n)) return lo;
-  return Math.max(lo, Math.min(hi, n));
-}
-
-function clampNum(n, lo, hi) {
-  if (Number.isNaN(n)) return lo;
-  return Math.max(lo, Math.min(hi, n));
-}
-
-function pickRoundQueue() {
-  const roundLen = clampInt(parseInt(ui.roundLen.value, 10), 5, 60);
-  const reviewRatio = clampNum(parseFloat(ui.reviewRatio.value), 0, 1);
-  const reviewCount = Math.round(roundLen * reviewRatio);
-  const newCount = roundLen - reviewCount;
-
-  const weakTopics = [...state.lastWeakTopics]; // categories
-  const bank = state.bank;
-
-  const fromWeak = shuffle(
-    bank.filter(c => weakTopics.includes(normalizeCategory(c.category)))
-  ).slice(0, reviewCount);
-
-  const fromNew = shuffle(
-    bank.filter(c => !weakTopics.includes(normalizeCategory(c.category)))
-  ).slice(0, newCount);
-
-  const combined = shuffle([...fromWeak, ...fromNew]).slice(0, roundLen);
-
-  return combined.length ? combined : shuffle(bank).slice(0, roundLen);
-}
-
-function resetRoundStats() {
-  state.stats = {};
-  state.answeredThisRound = 0;
-  state.totalThisRound = state.roundQueue.length;
-}
-
-function ensureCat(cat, tagsArr) {
-  const k = normalizeCategory(cat);
-  if (!state.stats[k]) {
-    state.stats[k] = { correct: 0, wrong: 0, total: 0, tags: new Set() };
-  }
-  (tagsArr || []).forEach(t => state.stats[k].tags.add(t));
-  return state.stats[k];
-}
-
-function setScore(n) {
-  state.score = n;
-  ui.score.textContent = String(n);
-}
-
-function showClue(i) {
-  const clue = state.roundQueue[i];
-  state.current = { ...clue, idx: i };
-
-  ui.clueIndex.textContent = String(i + 1);
-  ui.clueTotal.textContent = String(state.roundQueue.length);
-  updateHeaderForClue(clue);
-
-  ui.blankOverlay.classList.add("hidden");
-  ui.clueText.textContent = clue.clue;
-
-  setPhase("showing");
-  speak(`${normalizeCategory(clue.category)}. For ${clue.value}. ${clue.clue}`);
-  startTimer();
-}
-
-function revealAnswer(_wasBuzzed) {
-  stopTimer();
-  setPhase("buzzed");
-  ui.blankOverlay.classList.remove("hidden");
-
-  const blankMs = state.blankMs;
-  window.setTimeout(() => {
-    ui.blankOverlay.classList.add("hidden");
-    ui.clueText.textContent = state.current.response;
-    setPhase("revealed");
-    speak(`Correct response: ${state.current.response}`);
-  }, blankMs);
-}
-
-function markResult(isCorrect) {
-  const clue = state.current;
-  if (!clue) return;
-
-  const catKey = normalizeCategory(clue.category);
-  const s = ensureCat(catKey, clue.subject_tags);
-
-  s.total += 1;
-  if (isCorrect) s.correct += 1;
-  else s.wrong += 1;
-
-  const delta = isCorrect ? clue.value : -clue.value;
-  setScore(state.score + delta);
-
-  state.answeredThisRound += 1;
-
-  const nextIdx = clue.idx + 1;
-  if (nextIdx >= state.roundQueue.length) {
-    endRound();
-  } else {
-    showClue(nextIdx);
-  }
-}
-
-function skipClue() {
-  stopTimer();
-
-  // Neutral skip (counts as seen, not scored). Switch to markResult(false) for strictness.
-  const clue = state.current;
-  const catKey = normalizeCategory(clue.category);
-  const s = ensureCat(catKey, clue.subject_tags);
-  s.total += 1;
-
-  state.answeredThisRound += 1;
-
-  const nextIdx = clue.idx + 1;
-  if (nextIdx >= state.roundQueue.length) {
-    endRound();
-  } else {
-    showClue(nextIdx);
-  }
-}
-
-function endRound() {
-  stopTimer();
-  renderSummaryAndFeed();
-  ui.gameView.classList.add("hidden");
-  ui.learnView.classList.remove("hidden");
-
-  ui.btnStart.disabled = false;
-  ui.btnStart.textContent = "Start Round";
-}
-
-function categoryPerformanceRows() {
-  const rows = Object.entries(state.stats).map(([cat, v]) => {
-    const attempted = v.total || 0;
-    const correct = v.correct || 0;
-    const pct = attempted ? correct / attempted : 0;
-    return { cat, attempted, correct, wrong: v.wrong || 0, pct, tags: [...v.tags] };
-  });
-
-  const filtered = rows.filter(r => r.attempted > 0);
-  filtered.sort((a, b) => a.pct - b.pct); // weakest first
-  return filtered;
-}
-
-function pickWeakTopics(rows) {
-  const candidates = rows.filter(r => r.attempted >= 2);
-  const base = candidates.length ? candidates : rows;
-  return base.slice(0, Math.min(4, base.length)).map(r => r.cat);
-}
-
-function renderSummaryAndFeed() {
-  const rows = categoryPerformanceRows();
-  const weakCats = pickWeakTopics(rows);
-  state.lastWeakTopics = weakCats;
-
-  const totalAttempted = rows.reduce((a, r) => a + r.attempted, 0);
-  const totalCorrect = rows.reduce((a, r) => a + r.correct, 0);
-  const overallPct = totalAttempted ? totalCorrect / totalAttempted : 0;
-
-  ui.summary.innerHTML = `
-    <div class="summaryGrid">
-      <div class="sumCard">
-        <div class="sumTitle">Overall</div>
-        <div class="sumMeta">${fmtPct(overallPct)} • ${totalCorrect}/${totalAttempted} correct • Score ${state.score}</div>
-      </div>
-      ${rows.slice(0, 6).map(r => `
-        <div class="sumCard">
-          <div class="sumTitle">${escapeHtml(r.cat)}</div>
-          <div class="sumMeta">${fmtPct(r.pct)} • ${r.correct}/${r.attempted} correct</div>
-        </div>
-      `).join("")}
-    </div>
-  `;
-
-  buildFeed(weakCats, rows).catch(err => {
-    ui.feed.innerHTML = `<div class="cardSlide"><div class="slideTitle">Feed build failed</div><div class="slideBody">${escapeHtml(String(err))}</div></div>`;
-  });
-}
-
-async function buildFeed(weakCats, rows) {
-  ui.feed.innerHTML = "";
-
-  const statsByCat = new Map(rows.map(r => [r.cat, r]));
-  const useAI = ui.aiEnable.value === "1" && ui.openaiKey.value.trim().length > 0;
-
-  for (const cat of weakCats) {
-    const r = statsByCat.get(cat);
-    const tags = (r?.tags || []).slice(0, 6);
-
-    let lesson;
-    if (useAI) {
-      lesson = await aiLesson(cat, tags);
-    } else {
-      lesson = templateLesson(cat, tags);
-    }
-
-    ui.feed.appendChild(renderLessonCard({
-      category: cat,
-      subtitle: r ? `${fmtPct(r.pct)} • ${r.correct}/${r.attempted} correct` : "",
-      lesson
-    }));
-  }
-
-  ui.feed.appendChild(renderLessonCard({
-    category: "Review Loop",
-    subtitle: "How the next round is built",
-    lesson: {
-      title: "Next round = weak-topic review + new categories",
-      body: "You’ll see a mix: some clues from your weakest categories (to force retrieval), plus new categories to expand breadth.",
-      keyPoints: [
-        { h: "Retrieval first", p: "Try to answer before looking. Fast recall matters." },
-        { h: "Write miss reasons", p: "Name the failure mode: didn’t know, knew but slow, mixed two facts, misread clue." },
-        { h: "One tiny drill", p: "After 5 minutes, do 3 self-made flash prompts from the weak topic." },
-      ],
-      links: [
-        { label: "J-Archive (clue source)", href: "https://j-archive.com" },
-      ],
-    }
-  }));
-}
-
-function renderLessonCard({ category, subtitle, lesson }) {
-  const slide = document.createElement("div");
-  slide.className = "cardSlide";
-  slide.innerHTML = `
-    <div class="slideTop">
-      <div>
-        <div class="slideTitle">${escapeHtml(lesson.title || category)}</div>
-        <div class="topicPill">${escapeHtml(category)}${subtitle ? " • " + escapeHtml(subtitle) : ""}</div>
-      </div>
-      <div class="topicPill">~1–2 min</div>
-    </div>
-
-    <div class="slideBody">${escapeHtml(lesson.body || "")}</div>
-
-    <div class="kb">
-      ${(lesson.keyPoints || []).map(k => `
-        <div class="kbItem">
-          <h4>${escapeHtml(k.h)}</h4>
-          <p>${escapeHtml(k.p)}</p>
-        </div>
-      `).join("")}
-    </div>
-
-    <div class="slideFooter">
-      ${(lesson.links || []).map(l => `
-        <a class="link" target="_blank" rel="noreferrer" href="${escapeAttr(l.href)}">${escapeHtml(l.label)}</a>
-      `).join("")}
-    </div>
-  `;
-  return slide;
-}
-
-function templateLesson(category, tags) {
+function normalizeClueObj(x) {
   return {
-    title: `${category}: micro-review`,
-    body: "Goal: rebuild fast retrieval. Focus on 6 anchor facts, 3 common clue patterns, and 3 likely confusions.",
-    keyPoints: [
-      { h: "6 anchors", p: buildAnchors(category, tags).join(" • ") },
-      { h: "Clue patterns", p: buildPatterns(category).join(" • ") },
-      { h: "Common traps", p: buildTraps(category).join(" • ") },
-      { h: "30-second drill", p: "Say the answer first, then justify in one sentence. Repeat 5 times." },
-    ],
-    links: buildLinks(category),
+    id: String(x.id || crypto.randomUUID()),
+    round: String(x.round || "1").trim(),
+    category: normalizeCategory(x.category),
+    value: Number(x.value || 0) || 0,
+    clue: String(x.clue || "").trim(),
+    response: String(x.response || "").trim(),
+    air_date: String(x.air_date || ""),
+    source_url: String(x.source_url || ""),
+    subject_tags: Array.isArray(x.subject_tags) ? x.subject_tags : [],
   };
 }
 
-function buildAnchors(category, _tags) {
-  const c = category.toLowerCase();
-  if (c.includes("myth")) return [
-    "Greek/Roman name pairs",
-    "Major Olympians + symbols",
-    "Hero journeys (Odysseus, Heracles)",
-    "Norse: Odin/Thor/Loki roles",
-    "Egyptian: Ra/Osiris/Isis",
-    "Myth creatures: sirens, cyclopes, hydra"
-  ];
-  if (c.includes("shakes")) return [
-    "Major tragedies vs comedies",
-    "Key quotes → play mapping",
-    "Settings (Verona, Denmark, Scotland)",
-    "Common characters (Iago, Falstaff)",
-    "Plot cores (revenge, jealousy)",
-    "Last lines / famous soliloquies"
-  ];
-  if (c.includes("capital")) return [
-    "Continent clusters",
-    "Tricky pairs (Sydney≠capital)",
-    "River capitals (Seine, Thames)",
-    "Former names (Burma/Myanmar)",
-    "Language cues in clues",
-    "Map mental snapshots"
-  ];
-  return [
-    "Define the domain",
-    "List the top 10 items",
-    "Name 5 time periods",
-    "3 key people",
-    "3 key places",
-    "3 signature terms"
-  ];
-}
-
-function buildPatterns(category) {
-  const c = category.toLowerCase();
-  if (c.includes("myth")) return [
-    "‘This god/goddess of…’",
-    "‘Slain by…’ / ‘labors of…’",
-    "Symbol/attribute identification"
-  ];
-  if (c.includes("shakes")) return [
-    "Quote → play",
-    "Character → role",
-    "Setting → play"
-  ];
-  if (c.includes("geo") || c.includes("capital")) return [
-    "River/mountain borders",
-    "Former capital / renamed cities",
-    "‘Largest/longest’ superlatives"
-  ];
-  return [
-    "Etymology clue",
-    "Before/after pattern",
-    "Category title is a rule"
-  ];
-}
-
-function buildTraps(category) {
-  const c = category.toLowerCase();
-  if (c.includes("myth")) return [
-    "Greek vs Roman names",
-    "Similar-sounding heroes",
-    "Mixing Norse and Greek"
-  ];
-  if (c.includes("shakes")) return [
-    "Confusing tragedies",
-    "Misattributing quotes",
-    "Mixing character names"
-  ];
-  if (c.includes("capital")) return [
-    "Largest city ≠ capital",
-    "Old vs new names",
-    "Same-name cities"
-  ];
-  return [
-    "Overthinking category constraints",
-    "Not converting clue wording to target type",
-    "Confusing near-neighbors"
-  ];
-}
-
-function buildLinks(category) {
-  const q = encodeURIComponent(category.replace(/\(ORIGINAL\)/g, "").trim());
-  return [
-    { label: "Wikipedia quick scan", href: `https://en.wikipedia.org/wiki/Special:Search?search=${q}` },
-    { label: "YouTube quick explainer", href: `https://www.youtube.com/results?search_query=${q}+explained` },
-  ];
-}
-
-async function aiLesson(category, tags) {
-  const key = ui.openaiKey.value.trim();
-  const model = ui.openaiModel.value.trim() || "gpt-4.1-mini";
-
-  const prompt = `
-You are generating a 1–2 minute micro-lesson card for Jeopardy training.
-Topic category: ${category}
-Optional tags: ${tags.join(", ")}
-
-Return STRICT JSON:
-{
-  "title": "short punchy title",
-  "body": "80-140 words, dense, high-yield, retrieval-focused",
-  "keyPoints": [{"h":"...","p":"..."},{"h":"...","p":"..."},{"h":"...","p":"..."}],
-  "links": [{"label":"...","href":"https://..."}]
-}
-
-Constraints:
-- No fluff. Facts + retrieval prompts.
-- Include 1 quick drill prompt.
-- Links: Wikipedia search + YouTube search (use query URLs).
-`;
-
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: "You output strict JSON only." },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.3,
-    })
-  });
-
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`OpenAI error ${res.status}: ${t.slice(0, 400)}`);
-  }
-
-  const data = await res.json();
-  const txt = data?.choices?.[0]?.message?.content || "{}";
-  return JSON.parse(txt);
-}
-
-/* ---------- Import parsers ---------- */
+/* ---------------- Import parsing ---------------- */
 
 function parseDelimited(text, delimiter) {
-  // CSV/TSV-style parser with quotes and escaped quotes ("")
   const rows = [];
   let i = 0, field = "", row = [], inQuotes = false;
 
   const pushField = () => { row.push(field); field = ""; };
-  const pushRow = () => { if (row.length) rows.push(row); row = []; };
+  const pushRow = () => { rows.push(row); row = []; };
 
   while (i < text.length) {
     const c = text[i];
@@ -689,71 +142,490 @@ function parseDelimited(text, delimiter) {
 }
 
 function parseCSV(text) {
-  // Expected columns: id,round,category,value,clue,response,subject_tags,source_url
   const rows = parseDelimited(text, ",");
   const header = (rows.shift() || []).map(h => h.trim());
   const idx = Object.fromEntries(header.map((h, j) => [h, j]));
-
   const get = (r, name) => r[idx[name]] ?? "";
 
-  const out = rows
+  return rows
     .filter(r => r.some(x => String(x).trim().length))
-    .map(r => ({
-      id: String(get(r, "id") || crypto.randomUUID()),
-      round: String(get(r, "round") || "J"),
-      category: String(get(r, "category") || "UNKNOWN"),
-      value: parseInt(get(r, "value") || "0", 10) || 0,
-      clue: String(get(r, "clue") || ""),
-      response: String(get(r, "response") || ""),
-      subject_tags: String(get(r, "subject_tags") || "")
-        .split("|").map(s => s.trim()).filter(Boolean),
-      source_url: String(get(r, "source_url") || ""),
+    .map(r => normalizeClueObj({
+      id: get(r, "id") || crypto.randomUUID(),
+      round: get(r, "round") || "1",
+      category: get(r, "category") || "UNKNOWN",
+      value: parseInt(String(get(r, "value") || "0").replace(/[^0-9]/g, ""), 10) || 0,
+      clue: get(r, "clue") || "",
+      response: get(r, "response") || "",
+      subject_tags: String(get(r, "subject_tags") || "").split("|").map(s => s.trim()).filter(Boolean),
+      source_url: get(r, "source_url") || ""
     }))
-    .filter(x => x.clue && x.response && x.value > 0);
-
-  return out;
+    .filter(x => x.clue && x.response);
 }
 
 function parseJeopardyTSV(text) {
-  // jwolle1 dataset columns typically include:
-  // round, clue_value, daily_double_value, category, comments, answer, question, air_date, notes
   const rows = parseDelimited(text, "\t");
   const header = (rows.shift() || []).map(h => h.trim());
   const idx = Object.fromEntries(header.map((h, j) => [h, j]));
-
   const get = (r, name) => r[idx[name]] ?? "";
-
-  const roundMap = { "1": "J", "2": "DJ", "3": "FJ" };
 
   return rows
     .filter(r => r.some(x => String(x).trim().length))
     .map((r, k) => {
-      const air = String(get(r, "air_date") || "").trim();
       const roundRaw = String(get(r, "round") || "").trim();
-      const cat = String(get(r, "category") || "UNKNOWN").trim();
+      const valueRaw = String(get(r, "clue_value") || "0");
+      const value = parseInt(valueRaw.replace(/[^0-9]/g, ""), 10) || 0;
 
-      const clueValRaw = String(get(r, "clue_value") || "0");
-      const clueVal = parseInt(clueValRaw.replace(/[^0-9]/g, ""), 10) || 0;
-
-      // Dataset naming is historically "answer" = clue prompt, "question" = correct response
-      const cluePrompt = String(get(r, "answer") || "").trim();
-      const correctResp = String(get(r, "question") || "").trim();
-
-      return {
-        id: `${air || "nodate"}_${roundRaw || "r"}_${k}`,
-        round: roundMap[roundRaw] || roundRaw || "J",
-        category: cat,
-        value: clueVal,      // Final often 0; kept as 0
-        clue: cluePrompt,
-        response: correctResp,
-        subject_tags: [],
-        source_url: ""
-      };
+      return normalizeClueObj({
+        id: `${String(get(r, "air_date") || "nodate").trim()}_${roundRaw || "r"}_${k}`,
+        round: roundRaw || "1",
+        category: get(r, "category") || "UNKNOWN",
+        value,
+        clue: get(r, "answer") || "",
+        response: get(r, "question") || "",
+        air_date: get(r, "air_date") || ""
+      });
     })
-    .filter(x => x.clue && x.response); // allow value 0
+    .filter(x => x.clue && x.response);
 }
 
-/* ---------- Escaping helpers ---------- */
+function detectTSVByContent(text) {
+  const firstLine = (text.split(/\r?\n/, 1)[0] || "");
+  return firstLine.includes("\t") && (
+    firstLine.includes("clue_value") ||
+    firstLine.includes("air_date") ||
+    firstLine.includes("answer") ||
+    firstLine.includes("question")
+  );
+}
+
+/* ---------------- Voice / TTS ---------------- */
+
+let cachedVoices = [];
+
+function loadVoices() {
+  if (!("speechSynthesis" in window)) {
+    ui.voiceSelect.innerHTML = `<option value="">(No speech available)</option>`;
+    return;
+  }
+  cachedVoices = window.speechSynthesis.getVoices() || [];
+  ui.voiceSelect.innerHTML = "";
+
+  if (!cachedVoices.length) {
+    ui.voiceSelect.innerHTML = `<option value="">(Voices loading…)</option>`;
+    return;
+  }
+
+  const saved = localStorage.getItem("jt_voice_uri") || "";
+  let found = false;
+
+  for (const v of cachedVoices) {
+    const opt = document.createElement("option");
+    opt.value = v.voiceURI;
+    opt.textContent = `${v.name} — ${v.lang}${v.default ? " (default)" : ""}`;
+    if (v.voiceURI === saved) { opt.selected = true; found = true; }
+    ui.voiceSelect.appendChild(opt);
+  }
+
+  if (!found) {
+    ui.voiceSelect.value = "";
+    localStorage.setItem("jt_voice_uri", "");
+  }
+
+  state.selectedVoiceURI = ui.voiceSelect.value || null;
+}
+
+function getSelectedVoice() {
+  const uri = state.selectedVoiceURI;
+  if (!uri) return null;
+  return cachedVoices.find(v => v.voiceURI === uri) || null;
+}
+
+function estimateSpeechMs(text) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean).length;
+  const ms = Math.round(words * 400); // ~150 wpm fallback
+  return clampNum(ms, 1200, 12000, 5000);
+}
+
+function speakAsync(text) {
+  if (!ui.ttsToggle.checked) return Promise.resolve();
+  if (!("speechSynthesis" in window)) return Promise.resolve();
+
+  try { window.speechSynthesis.cancel(); } catch {}
+
+  return new Promise((resolve) => {
+    const u = new SpeechSynthesisUtterance(text);
+    const v = getSelectedVoice();
+    if (v) u.voice = v;
+
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+
+    u.onend = finish;
+    u.onerror = finish;
+
+    const fallback = window.setTimeout(finish, estimateSpeechMs(text) + 500);
+
+    const wrap = () => { window.clearTimeout(fallback); finish(); };
+    u.onend = wrap;
+    u.onerror = wrap;
+
+    window.speechSynthesis.speak(u);
+  });
+}
+
+/* ---------------- Board building ---------------- */
+
+function eligibleForBoard(c) {
+  const r = String(c.round || "").trim().toUpperCase();
+  const isJ = (r === "1" || r === "J" || r === "JEOPARDY");
+  const vOK = VALUES.includes(Number(c.value || 0));
+  return isJ && vOK && c.clue && c.response;
+}
+
+function groupByCategoryAndValue(clues) {
+  const map = new Map(); // cat -> Map(value -> [clues])
+  for (const c of clues) {
+    const cat = normalizeCategory(c.category);
+    if (!map.has(cat)) map.set(cat, new Map());
+    const m = map.get(cat);
+    if (!m.has(c.value)) m.set(c.value, []);
+    m.get(c.value).push(c);
+  }
+  return map;
+}
+
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function buildBoard() {
+  const nCats = clampNum(parseInt(ui.categoriesCount.value, 10), 3, 6, 4);
+  if (!state.bank.length) throw new Error("No dataset loaded. Import a TSV in Settings.");
+
+  const eligible = state.bank.filter(eligibleForBoard);
+  const grouped = groupByCategoryAndValue(eligible);
+
+  const completeCats = [];
+  for (const [cat, m] of grouped.entries()) {
+    const ok = VALUES.every(v => (m.get(v) || []).length > 0);
+    if (ok) completeCats.push(cat);
+  }
+
+  if (completeCats.length < nCats) {
+    throw new Error(`Not enough complete categories for a ${nCats}-category board. Found ${completeCats.length}.`);
+  }
+
+  const pickedCats = shuffle(completeCats).slice(0, nCats);
+
+  state.boardCats = pickedCats.map((catName) => {
+    const valueMap = grouped.get(catName);
+    const cluesByValue = new Map();
+    for (const v of VALUES) {
+      const options = valueMap.get(v) || [];
+      const clue = options[Math.floor(Math.random() * options.length)];
+      cluesByValue.set(v, clue);
+    }
+    return { name: catName, cluesByValue, usedValues: new Set() };
+  });
+
+  state.usedCount = 0;
+  state.totalCells = nCats * VALUES.length;
+  state.outcomes = [];
+  setScore(0);
+
+  renderBoard();
+  showView(ui.boardView);
+  setStatus("Board ready. Tap a dollar amount.");
+}
+
+function renderBoard() {
+  const n = state.boardCats.length;
+  const grid = document.createElement("div");
+  grid.className = "boardGrid";
+  grid.style.gridTemplateColumns = `repeat(${n}, minmax(0, 1fr))`;
+
+  for (let c = 0; c < n; c++) {
+    const h = document.createElement("div");
+    h.className = "boardHead";
+    h.textContent = state.boardCats[c].name;
+    grid.appendChild(h);
+  }
+
+  for (const value of VALUES) {
+    for (let c = 0; c < n; c++) {
+      const cell = document.createElement("div");
+      const used = state.boardCats[c].usedValues.has(value);
+      cell.className = `boardCell ${used ? "used" : ""}`;
+
+      const btn = document.createElement("button");
+      btn.className = "boardCellBtn";
+      btn.textContent = `$${value}`;
+      btn.disabled = used;
+      btn.addEventListener("click", () => openClue(c, value));
+      cell.appendChild(btn);
+
+      grid.appendChild(cell);
+    }
+  }
+
+  ui.board.innerHTML = "";
+  ui.board.appendChild(grid);
+}
+
+function markCellUsed(catIndex, value) {
+  const cat = state.boardCats[catIndex];
+  if (!cat.usedValues.has(value)) {
+    cat.usedValues.add(value);
+    state.usedCount += 1;
+  }
+  renderBoard();
+  if (state.usedCount >= state.totalCells) endBoard();
+}
+
+/* ---------------- Clue flow ---------------- */
+
+function cancelRAF() {
+  if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = null; }
+}
+
+function resetClueUI() {
+  cancelRAF();
+  ui.progressFill.style.width = "0%";
+  ui.progressWrap.classList.add("hidden");
+  ui.btnBuzz.classList.add("hidden");
+  ui.blankScreen.classList.add("hidden");
+  ui.resultActions.classList.add("hidden");
+  ui.noBuzzActions.classList.add("hidden");
+}
+
+function openClue(catIndex, value) {
+  const cat = state.boardCats[catIndex];
+  const clueObj = cat.cluesByValue.get(value);
+
+  state.active = { catIndex, value, clueObj };
+
+  ui.clueCategory.textContent = cat.name;
+  ui.clueValue.textContent = `$${value}`;
+  ui.clueText.textContent = clueObj.clue;
+
+  resetClueUI();
+  showView(ui.clueView);
+
+  runClueFlow(clueObj).catch(err => {
+    ui.clueText.textContent = `Error: ${String(err)}`;
+    ui.noBuzzActions.classList.remove("hidden");
+  });
+}
+
+async function runClueFlow(clueObj) {
+  // Bug fix #1: countdown starts only after reading ends
+  await speakAsync(`${normalizeCategory(clueObj.category)}. For ${clueObj.value}. ${clueObj.clue}`);
+  startBuzzWindow();
+}
+
+function startBuzzWindow() {
+  resetClueUI();
+
+  const ms = state.buzzWindowMs;
+  const start = performance.now();
+  state.buzzDeadline = start + ms;
+
+  ui.progressWrap.classList.remove("hidden");
+  ui.btnBuzz.classList.remove("hidden");
+  ui.progressLabel.textContent = `Buzz window: ${(ms / 1000).toFixed(1)}s`;
+
+  let buzzed = false;
+
+  const onBuzz = () => {
+    if (buzzed) return;
+    buzzed = true;
+    ui.btnBuzz.disabled = true;
+    cancelRAF();
+    ui.progressFill.style.width = "100%";
+    handleBuzz();
+  };
+
+  ui.btnBuzz.disabled = false;
+  ui.btnBuzz.onclick = onBuzz;
+
+  const tick = () => {
+    const now = performance.now();
+    const left = Math.max(0, state.buzzDeadline - now);
+    const pct = Math.min(1, (now - start) / ms);
+    ui.progressFill.style.width = `${Math.round(pct * 100)}%`;
+
+    if (left <= 0) {
+      ui.btnBuzz.disabled = true;
+      ui.btnBuzz.classList.add("hidden");
+      revealNoBuzz();
+      return;
+    }
+    state.rafId = requestAnimationFrame(tick);
+  };
+
+  state.rafId = requestAnimationFrame(tick);
+}
+
+function revealNoBuzz() {
+  const { catIndex, value, clueObj } = state.active;
+
+  ui.clueText.textContent = clueObj.response;
+
+  state.outcomes.push({
+    status: "skipped",
+    cat: state.boardCats[catIndex].name,
+    value,
+    clue: clueObj.clue,
+    response: clueObj.response
+  });
+
+  ui.noBuzzActions.classList.remove("hidden");
+  ui.btnBackToBoard.onclick = () => {
+    markCellUsed(catIndex, value);
+    showView(ui.boardView);
+    setStatus("Tap the next dollar amount.");
+  };
+}
+
+function handleBuzz() {
+  const { clueObj } = state.active;
+
+  ui.blankScreen.classList.remove("hidden");
+  ui.progressWrap.classList.add("hidden");
+  ui.btnBuzz.classList.add("hidden");
+
+  window.setTimeout(() => {
+    ui.blankScreen.classList.add("hidden");
+    ui.clueText.textContent = clueObj.response;
+    ui.resultActions.classList.remove("hidden");
+
+    ui.btnGotIt.onclick = () => finalizeBuzzResult(true);
+    ui.btnMissed.onclick = () => finalizeBuzzResult(false);
+  }, state.blankMs);
+}
+
+function finalizeBuzzResult(gotIt) {
+  const { catIndex, value, clueObj } = state.active;
+
+  if (gotIt) setScore(state.score + value);
+  else setScore(state.score - value);
+
+  state.outcomes.push({
+    status: gotIt ? "correct" : "wrong",
+    cat: state.boardCats[catIndex].name,
+    value,
+    clue: clueObj.clue,
+    response: clueObj.response
+  });
+
+  markCellUsed(catIndex, value);
+  showView(ui.boardView);
+  setStatus("Tap the next dollar amount.");
+}
+
+/* ---------------- Results + learning cards ---------------- */
+
+function endBoard() {
+  showView(ui.resultsView);
+  renderResults();
+}
+
+function pct(n, d) { return d ? `${Math.round((n / d) * 100)}%` : "0%"; }
+
+function renderResults() {
+  const total = state.totalCells;
+  const buzzed = state.outcomes.filter(o => o.status === "correct" || o.status === "wrong").length;
+  const correct = state.outcomes.filter(o => o.status === "correct").length;
+  const wrong = state.outcomes.filter(o => o.status === "wrong").length;
+  const skipped = state.outcomes.filter(o => o.status === "skipped").length;
+
+  const byCat = new Map();
+  for (const o of state.outcomes) {
+    if (!byCat.has(o.cat)) byCat.set(o.cat, { correct: 0, wrong: 0, skipped: 0, total: 0 });
+    const s = byCat.get(o.cat);
+    s.total += 1;
+    if (o.status === "correct") s.correct += 1;
+    if (o.status === "wrong") s.wrong += 1;
+    if (o.status === "skipped") s.skipped += 1;
+  }
+
+  const catCards = [...byCat.entries()].map(([cat, s]) => {
+    const attempted = s.correct + s.wrong;
+    const acc = attempted ? (s.correct / attempted) : 0;
+    return { cat, ...s, attempted, acc };
+  }).sort((a, b) => a.acc - b.acc);
+
+  ui.resultsSummary.innerHTML = `
+    <div class="sumGrid">
+      <div class="sumCard">
+        <div class="sumTitle">Score</div>
+        <div class="sumMeta">${state.score}</div>
+      </div>
+      <div class="sumCard">
+        <div class="sumTitle">Attempted (buzzed)</div>
+        <div class="sumMeta">${buzzed}/${total} • Accuracy ${pct(correct, buzzed)}</div>
+      </div>
+      <div class="sumCard">
+        <div class="sumTitle">Correct / Wrong</div>
+        <div class="sumMeta">${correct} correct • ${wrong} wrong</div>
+      </div>
+      <div class="sumCard">
+        <div class="sumTitle">Skipped</div>
+        <div class="sumMeta">${skipped} revealed, no buzz</div>
+      </div>
+      ${catCards.slice(0, 6).map(c => `
+        <div class="sumCard">
+          <div class="sumTitle">${escapeHtml(c.cat)}</div>
+          <div class="sumMeta">
+            Accuracy ${pct(c.correct, c.attempted)} • Attempted ${c.attempted} • Skipped ${c.skipped}
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+
+  const review = state.outcomes.filter(o => o.status === "wrong" || o.status === "skipped");
+  ui.feed.innerHTML = "";
+  for (const item of review) ui.feed.appendChild(renderReviewCard(item));
+}
+
+function renderReviewCard(item) {
+  const div = document.createElement("div");
+  div.className = "feedCard";
+
+  const statusLabel = item.status === "wrong" ? "MISSED" : "SKIPPED";
+  const query = encodeURIComponent(`${item.response} ${item.cat}`);
+  const wiki = `https://en.wikipedia.org/wiki/Special:Search?search=${query}`;
+  const yt = `https://www.youtube.com/results?search_query=${query}`;
+
+  div.innerHTML = `
+    <div class="feedCardTitle">${escapeHtml(item.cat)} • $${item.value} • ${statusLabel}</div>
+    <div class="feedCardSub">Clue → Correct response</div>
+    <div class="feedBody">
+      <div><strong>Clue:</strong> ${escapeHtml(item.clue)}</div>
+      <div style="margin-top:8px;"><strong>Correct:</strong> ${escapeHtml(item.response)}</div>
+      <div style="margin-top:10px;">${escapeHtml(buildExplanation(item))}</div>
+      <div style="margin-top:10px;"><strong>Drill:</strong> Say the response first, then justify it in one sentence. Repeat 3 times.</div>
+    </div>
+    <div class="feedLinks">
+      <a class="link" href="${wiki}" target="_blank" rel="noreferrer">Wikipedia</a>
+      <a class="link" href="${yt}" target="_blank" rel="noreferrer">YouTube</a>
+    </div>
+  `;
+  return div;
+}
+
+function buildExplanation(item) {
+  const resp = item.response.replace(/^(who|what)\s+is\s+/i, "").replace(/\?$/, "");
+  return `Anchor: ${resp}. Translate the clue into a one-line definition, then retrieve the proper noun. If you hesitated, you lacked an immediate anchor—fix by drilling 5 fast prompts using the response as the starting cue.`;
+}
+
+/* ---------------- Escaping ---------------- */
 
 function escapeHtml(s) {
   return String(s)
@@ -764,130 +636,89 @@ function escapeHtml(s) {
     .replaceAll("'", "&#039;");
 }
 
-function escapeAttr(s) {
-  return String(s).replaceAll('"', "%22");
-}
+/* ---------------- UI wiring ---------------- */
 
-/* ---------- Events ---------- */
+function applySettingsFromUI() {
+  state.buzzWindowMs = Math.round(clampNum(ui.buzzWindowSec.value, 1, 15, 5) * 1000);
+  state.blankMs = Math.round(clampNum(ui.blankMs.value, 250, 5000, 2000));
+}
 
 ui.btnSettings.addEventListener("click", () => ui.settingsModal.showModal());
 
-ui.btnLoadSample.addEventListener("click", () => {
-  state.bank = [...SAMPLE_BANK];
-  ui.importStatus.textContent = `Loaded built-in sample: ${state.bank.length} clues`;
+ui.voiceSelect.addEventListener("change", () => {
+  state.selectedVoiceURI = ui.voiceSelect.value || null;
+  localStorage.setItem("jt_voice_uri", ui.voiceSelect.value || "");
+});
+
+ui.buzzWindowSec.addEventListener("change", applySettingsFromUI);
+ui.blankMs.addEventListener("change", applySettingsFromUI);
+
+ui.btnNewBoard.addEventListener("click", () => {
+  applySettingsFromUI();
+  try { buildBoard(); } catch (e) { setStatus(String(e)); }
+});
+
+ui.btnNewBoard2.addEventListener("click", () => {
+  applySettingsFromUI();
+  try { buildBoard(); } catch (e) { setStatus(String(e)); showView(ui.boardView); }
+});
+
+ui.btnBackToBoardTop.addEventListener("click", () => {
+  if (state.active) {
+    const { catIndex, value } = state.active;
+    markCellUsed(catIndex, value);
+  }
+  showView(ui.boardView);
+  setStatus("Tap the next dollar amount.");
 });
 
 ui.fileInput.addEventListener("change", async (e) => {
   const f = e.target.files?.[0];
   if (!f) return;
-  const text = await f.text();
 
   try {
+    const text = await f.text();
     const name = (f.name || "").toLowerCase();
-
-    const firstLine = text.split(/\r?\n/, 1)[0] || "";
-    const looksLikeTSV =
-      firstLine.includes("\t") &&
-      (firstLine.includes("clue_value") || firstLine.includes("air_date") || firstLine.includes("answer"));
+    const looksTSV = name.endsWith(".tsv") || detectTSVByContent(text);
 
     let cleaned;
-
     if (name.endsWith(".json")) {
-      const bank = JSON.parse(text);
-      if (!Array.isArray(bank)) throw new Error("JSON must be an array");
-      cleaned = bank.map(x => ({
-        id: String(x.id || crypto.randomUUID()),
-        round: String(x.round || "J"),
-        category: String(x.category || "UNKNOWN"),
-        value: parseInt(x.value || 0, 10) || 0,
-        clue: String(x.clue || ""),
-        response: String(x.response || ""),
-        subject_tags: Array.isArray(x.subject_tags)
-          ? x.subject_tags
-          : String(x.subject_tags || "").split("|").map(s => s.trim()).filter(Boolean),
-        source_url: String(x.source_url || ""),
-      })).filter(x => x.clue && x.response);
-    } else if (name.endsWith(".tsv") || looksLikeTSV) {
+      const arr = JSON.parse(text);
+      if (!Array.isArray(arr)) throw new Error("JSON must be an array");
+      cleaned = arr.map(normalizeClueObj).filter(x => x.clue && x.response);
+    } else if (looksTSV) {
       cleaned = parseJeopardyTSV(text);
     } else {
       cleaned = parseCSV(text);
     }
 
-    if (!cleaned || cleaned.length < 10) {
-      throw new Error("Need at least 10 valid clues (clue + response).");
-    }
+    if (!cleaned.length) throw new Error("Import produced 0 clues.");
 
     state.bank = cleaned;
     ui.importStatus.textContent = `Imported: ${cleaned.length} clues`;
+    setStatus("Dataset imported. Tap New Board.");
   } catch (err) {
     ui.importStatus.textContent = `Import failed: ${String(err)}`;
+    setStatus("Import failed.");
   } finally {
     ui.fileInput.value = "";
   }
 });
 
-ui.timeLimit.addEventListener("change", () => {
-  state.timeLimitSec = parseFloat(ui.timeLimit.value) || 5;
-});
+/* ---------------- Init ---------------- */
 
-ui.blankTime.addEventListener("change", () => {
-  state.blankMs = parseInt(ui.blankTime.value, 10) || 2000;
-});
+function init() {
+  setScore(0);
+  applySettingsFromUI();
 
-ui.btnStart.addEventListener("click", () => startRound());
-
-ui.btnSkip.addEventListener("click", () => {
-  if (state.phase !== "showing") return;
-  skipClue();
-});
-
-ui.btnCorrect.addEventListener("click", () => {
-  if (state.phase !== "revealed") return;
-  markResult(true);
-});
-
-ui.btnWrong.addEventListener("click", () => {
-  if (state.phase !== "revealed") return;
-  markResult(false);
-});
-
-ui.clueCard.addEventListener("click", () => {
-  if (state.phase !== "showing") return;
-  revealAnswer(true);
-});
-
-ui.clueCard.addEventListener("keydown", (e) => {
-  if (e.key === " " || e.key === "Enter") {
-    e.preventDefault();
-    if (state.phase === "showing") revealAnswer(true);
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.onvoiceschanged = loadVoices;
   }
-});
+  loadVoices();
 
-ui.btnNextRound.addEventListener("click", () => {
-  ui.learnView.classList.add("hidden");
-  ui.gameView.classList.remove("hidden");
-  startRound();
-});
-
-function startRound() {
-  state.timeLimitSec = parseFloat(ui.timeLimit.value) || 5;
-  state.blankMs = parseInt(ui.blankTime.value, 10) || 2000;
-
-  state.roundQueue = pickRoundQueue();
-  resetRoundStats();
-
-  ui.clueTotal.textContent = String(state.roundQueue.length);
-  ui.clueIndex.textContent = "0";
-  ui.timeLeft.textContent = state.timeLimitSec.toFixed(1);
-
-  ui.btnStart.disabled = true;
-  ui.btnStart.textContent = "Round Running";
-
-  showClue(0);
+  setStatus("Import a TSV in Settings, then tap New Board.");
+  ui.importStatus.textContent = "No import yet.";
+  showView(ui.boardView);
 }
 
-/* ---------- Init ---------- */
-
-setPhase("idle");
-setScore(0);
-ui.importStatus.textContent = `Loaded built-in sample: ${state.bank.length} clues`;
+init();
