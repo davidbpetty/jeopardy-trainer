@@ -1,16 +1,13 @@
-/* Jeopardy Trainer — Board Mode
-   - Full board: N categories x 5 values
-   - Random category picked from TSV; one random clue per value in that category
-   - Countdown starts ONLY after TTS finishes reading clue
-   - Buzz within window => blank screen => reveal => Got it / Missed (score +/- value)
-   - No buzz => reveal => Back to board (no score change)
-   - Used clues removed from board
-   - End => stats + missed/skipped review cards
+/* Jeopardy Trainer — Board Mode (mobile-first)
+   Fixes in this version:
+   - Always show results when board is exhausted
+   - TTS reads only the clue (not category/value)
+   - Progress bar animates (ensure .progressFill has a background in CSS)
+   - Buzz window starts only AFTER reading completes (robust iOS gating)
+   - Optional OpenAI TTS via user-entered key stored in localStorage (not in repo)
 
-   Import:
-   - TSV jwolle1: round, clue_value, daily_double_value, category, comments, answer, question, air_date, notes
-   - CSV custom: id,round,category,value,clue,response,subject_tags,source_url
-   - JSON array: id,round,category,value,clue,response,subject_tags,source_url
+   OpenAI TTS REST: POST https://api.openai.com/v1/audio/speech  (model gpt-4o-mini-tts)
+   Docs: https://platform.openai.com/docs/api-reference/audio/create-speech
 */
 
 const $ = (id) => document.getElementById(id);
@@ -51,10 +48,18 @@ const ui = {
   fileInput: $("fileInput"),
   importStatus: $("importStatus"),
 
+  // System TTS
   ttsToggle: $("ttsToggle"),
   voiceSelect: $("voiceSelect"),
+
+  // Timing
   buzzWindowSec: $("buzzWindowSec"),
   blankMs: $("blankMs"),
+
+  // OpenAI TTS (added in index.html)
+  openaiTtsToggle: $("openaiTtsToggle"),
+  openaiApiKey: $("openaiApiKey"),
+  openaiVoiceSelect: $("openaiVoiceSelect"),
 };
 
 const VALUES = [200, 400, 600, 800, 1000];
@@ -77,6 +82,9 @@ const state = {
   selectedVoiceURI: null,
   buzzWindowMs: 5000,
   blankMs: 2000,
+
+  // OpenAI TTS audio element (reused)
+  openaiAudio: null,
 };
 
 function setStatus(msg) { ui.statusLine.textContent = msg; }
@@ -242,17 +250,31 @@ function getSelectedVoice() {
 
 function estimateSpeechMs(text) {
   const words = String(text || "").trim().split(/\s+/).filter(Boolean).length;
-  const ms = Math.round(words * 400); // ~150 wpm fallback
-  return clampNum(ms, 1200, 12000, 5000);
+  const ms = Math.round(words * 420); // conservative fallback
+  return clampNum(ms, 1200, 15000, 6000);
 }
 
-function speakAsync(text) {
-  if (!ui.ttsToggle.checked) return Promise.resolve();
-  if (!("speechSynthesis" in window)) return Promise.resolve();
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function waitForSpeechSynthesisToFinish(maxMs) {
+  if (!("speechSynthesis" in window)) return;
+  const startedAt = performance.now();
+  // iOS can fire onend early or fail to fire; gate on speechSynthesis.speaking
+  while (performance.now() - startedAt < maxMs) {
+    if (!window.speechSynthesis.speaking) return;
+    await delay(80);
+  }
+}
+
+async function speakSystemAsync(text) {
+  if (!ui.ttsToggle.checked) return;
+  if (!("speechSynthesis" in window)) return;
 
   try { window.speechSynthesis.cancel(); } catch {}
 
-  return new Promise((resolve) => {
+  const estimated = estimateSpeechMs(text);
+
+  await new Promise((resolve) => {
     const u = new SpeechSynthesisUtterance(text);
     const v = getSelectedVoice();
     if (v) u.voice = v;
@@ -263,14 +285,83 @@ function speakAsync(text) {
     u.onend = finish;
     u.onerror = finish;
 
-    const fallback = window.setTimeout(finish, estimateSpeechMs(text) + 500);
+    // absolute fallback
+    const hard = window.setTimeout(finish, estimated + 1200);
 
-    const wrap = () => { window.clearTimeout(fallback); finish(); };
-    u.onend = wrap;
-    u.onerror = wrap;
+    // If onend fires, clear fallback
+    const wrappedFinish = () => { window.clearTimeout(hard); finish(); };
+    u.onend = wrappedFinish;
+    u.onerror = wrappedFinish;
 
     window.speechSynthesis.speak(u);
   });
+
+  // Extra gate to prevent early countdown starts
+  await waitForSpeechSynthesisToFinish(estimated + 1500);
+}
+
+function getOpenAISettings() {
+  const enabled = ui.openaiTtsToggle ? ui.openaiTtsToggle.checked : false;
+  const key = ui.openaiApiKey ? (ui.openaiApiKey.value || "").trim() : "";
+  const voice = ui.openaiVoiceSelect ? (ui.openaiVoiceSelect.value || "alloy") : "alloy";
+  return { enabled, key, voice };
+}
+
+async function speakOpenAIAsync(text) {
+  const { enabled, key, voice } = getOpenAISettings();
+  if (!enabled) return false;
+  if (!key) return false;
+
+  try {
+    if (!state.openaiAudio) state.openaiAudio = new Audio();
+
+    // Use AAC for iOS friendliness (supported output formats are documented)
+    const res = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini-tts",
+        voice,
+        input: text,
+        format: "aac",
+      }),
+    });
+
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`OpenAI TTS HTTP ${res.status}: ${t.slice(0, 200)}`);
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+
+    // Stop any system speech
+    try { window.speechSynthesis?.cancel?.(); } catch {}
+
+    await new Promise((resolve, reject) => {
+      const a = state.openaiAudio;
+      a.onended = () => { resolve(); };
+      a.onerror = () => { reject(new Error("Audio playback failed")); };
+      a.src = url;
+      a.currentTime = 0;
+      a.play().then(() => {}).catch(reject);
+    });
+
+    URL.revokeObjectURL(url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function speakAsync(text) {
+  // Prefer OpenAI TTS when enabled; fall back to system
+  const ok = await speakOpenAIAsync(text);
+  if (ok) return;
+  await speakSystemAsync(text);
 }
 
 /* ---------------- Board building ---------------- */
@@ -336,11 +427,17 @@ function buildBoard() {
   state.usedCount = 0;
   state.totalCells = nCats * VALUES.length;
   state.outcomes = [];
+  state.active = null;
   setScore(0);
 
   renderBoard();
   showView(ui.boardView);
   setStatus("Board ready. Tap a dollar amount.");
+}
+
+function isBoardExhausted() {
+  if (!state.boardCats.length) return false;
+  return state.usedCount >= state.totalCells;
 }
 
 function renderBoard() {
@@ -375,350 +472,7 @@ function renderBoard() {
 
   ui.board.innerHTML = "";
   ui.board.appendChild(grid);
-}
 
-function markCellUsed(catIndex, value) {
-  const cat = state.boardCats[catIndex];
-  if (!cat.usedValues.has(value)) {
-    cat.usedValues.add(value);
-    state.usedCount += 1;
-  }
-  renderBoard();
-  if (state.usedCount >= state.totalCells) endBoard();
-}
-
-/* ---------------- Clue flow ---------------- */
-
-function cancelRAF() {
-  if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = null; }
-}
-
-function resetClueUI() {
-  cancelRAF();
-  ui.progressFill.style.width = "0%";
-  ui.progressWrap.classList.add("hidden");
-  ui.btnBuzz.classList.add("hidden");
-  ui.blankScreen.classList.add("hidden");
-  ui.resultActions.classList.add("hidden");
-  ui.noBuzzActions.classList.add("hidden");
-}
-
-function openClue(catIndex, value) {
-  const cat = state.boardCats[catIndex];
-  const clueObj = cat.cluesByValue.get(value);
-
-  state.active = { catIndex, value, clueObj };
-
-  ui.clueCategory.textContent = cat.name;
-  ui.clueValue.textContent = `$${value}`;
-  ui.clueText.textContent = clueObj.clue;
-
-  resetClueUI();
-  showView(ui.clueView);
-
-  runClueFlow(clueObj).catch(err => {
-    ui.clueText.textContent = `Error: ${String(err)}`;
-    ui.noBuzzActions.classList.remove("hidden");
-  });
-}
-
-async function runClueFlow(clueObj) {
-  // Bug fix #1: countdown starts only after reading ends
-  await speakAsync(`${normalizeCategory(clueObj.category)}. For ${clueObj.value}. ${clueObj.clue}`);
-  startBuzzWindow();
-}
-
-function startBuzzWindow() {
-  resetClueUI();
-
-  const ms = state.buzzWindowMs;
-  const start = performance.now();
-  state.buzzDeadline = start + ms;
-
-  ui.progressWrap.classList.remove("hidden");
-  ui.btnBuzz.classList.remove("hidden");
-  ui.progressLabel.textContent = `Buzz window: ${(ms / 1000).toFixed(1)}s`;
-
-  let buzzed = false;
-
-  const onBuzz = () => {
-    if (buzzed) return;
-    buzzed = true;
-    ui.btnBuzz.disabled = true;
-    cancelRAF();
-    ui.progressFill.style.width = "100%";
-    handleBuzz();
-  };
-
-  ui.btnBuzz.disabled = false;
-  ui.btnBuzz.onclick = onBuzz;
-
-  const tick = () => {
-    const now = performance.now();
-    const left = Math.max(0, state.buzzDeadline - now);
-    const pct = Math.min(1, (now - start) / ms);
-    ui.progressFill.style.width = `${Math.round(pct * 100)}%`;
-
-    if (left <= 0) {
-      ui.btnBuzz.disabled = true;
-      ui.btnBuzz.classList.add("hidden");
-      revealNoBuzz();
-      return;
-    }
-    state.rafId = requestAnimationFrame(tick);
-  };
-
-  state.rafId = requestAnimationFrame(tick);
-}
-
-function revealNoBuzz() {
-  const { catIndex, value, clueObj } = state.active;
-
-  ui.clueText.textContent = clueObj.response;
-
-  state.outcomes.push({
-    status: "skipped",
-    cat: state.boardCats[catIndex].name,
-    value,
-    clue: clueObj.clue,
-    response: clueObj.response
-  });
-
-  ui.noBuzzActions.classList.remove("hidden");
-  ui.btnBackToBoard.onclick = () => {
-    markCellUsed(catIndex, value);
-    showView(ui.boardView);
-    setStatus("Tap the next dollar amount.");
-  };
-}
-
-function handleBuzz() {
-  const { clueObj } = state.active;
-
-  ui.blankScreen.classList.remove("hidden");
-  ui.progressWrap.classList.add("hidden");
-  ui.btnBuzz.classList.add("hidden");
-
-  window.setTimeout(() => {
-    ui.blankScreen.classList.add("hidden");
-    ui.clueText.textContent = clueObj.response;
-    ui.resultActions.classList.remove("hidden");
-
-    ui.btnGotIt.onclick = () => finalizeBuzzResult(true);
-    ui.btnMissed.onclick = () => finalizeBuzzResult(false);
-  }, state.blankMs);
-}
-
-function finalizeBuzzResult(gotIt) {
-  const { catIndex, value, clueObj } = state.active;
-
-  if (gotIt) setScore(state.score + value);
-  else setScore(state.score - value);
-
-  state.outcomes.push({
-    status: gotIt ? "correct" : "wrong",
-    cat: state.boardCats[catIndex].name,
-    value,
-    clue: clueObj.clue,
-    response: clueObj.response
-  });
-
-  markCellUsed(catIndex, value);
-  showView(ui.boardView);
-  setStatus("Tap the next dollar amount.");
-}
-
-/* ---------------- Results + learning cards ---------------- */
-
-function endBoard() {
-  showView(ui.resultsView);
-  renderResults();
-}
-
-function pct(n, d) { return d ? `${Math.round((n / d) * 100)}%` : "0%"; }
-
-function renderResults() {
-  const total = state.totalCells;
-  const buzzed = state.outcomes.filter(o => o.status === "correct" || o.status === "wrong").length;
-  const correct = state.outcomes.filter(o => o.status === "correct").length;
-  const wrong = state.outcomes.filter(o => o.status === "wrong").length;
-  const skipped = state.outcomes.filter(o => o.status === "skipped").length;
-
-  const byCat = new Map();
-  for (const o of state.outcomes) {
-    if (!byCat.has(o.cat)) byCat.set(o.cat, { correct: 0, wrong: 0, skipped: 0, total: 0 });
-    const s = byCat.get(o.cat);
-    s.total += 1;
-    if (o.status === "correct") s.correct += 1;
-    if (o.status === "wrong") s.wrong += 1;
-    if (o.status === "skipped") s.skipped += 1;
-  }
-
-  const catCards = [...byCat.entries()].map(([cat, s]) => {
-    const attempted = s.correct + s.wrong;
-    const acc = attempted ? (s.correct / attempted) : 0;
-    return { cat, ...s, attempted, acc };
-  }).sort((a, b) => a.acc - b.acc);
-
-  ui.resultsSummary.innerHTML = `
-    <div class="sumGrid">
-      <div class="sumCard">
-        <div class="sumTitle">Score</div>
-        <div class="sumMeta">${state.score}</div>
-      </div>
-      <div class="sumCard">
-        <div class="sumTitle">Attempted (buzzed)</div>
-        <div class="sumMeta">${buzzed}/${total} • Accuracy ${pct(correct, buzzed)}</div>
-      </div>
-      <div class="sumCard">
-        <div class="sumTitle">Correct / Wrong</div>
-        <div class="sumMeta">${correct} correct • ${wrong} wrong</div>
-      </div>
-      <div class="sumCard">
-        <div class="sumTitle">Skipped</div>
-        <div class="sumMeta">${skipped} revealed, no buzz</div>
-      </div>
-      ${catCards.slice(0, 6).map(c => `
-        <div class="sumCard">
-          <div class="sumTitle">${escapeHtml(c.cat)}</div>
-          <div class="sumMeta">
-            Accuracy ${pct(c.correct, c.attempted)} • Attempted ${c.attempted} • Skipped ${c.skipped}
-          </div>
-        </div>
-      `).join("")}
-    </div>
-  `;
-
-  const review = state.outcomes.filter(o => o.status === "wrong" || o.status === "skipped");
-  ui.feed.innerHTML = "";
-  for (const item of review) ui.feed.appendChild(renderReviewCard(item));
-}
-
-function renderReviewCard(item) {
-  const div = document.createElement("div");
-  div.className = "feedCard";
-
-  const statusLabel = item.status === "wrong" ? "MISSED" : "SKIPPED";
-  const query = encodeURIComponent(`${item.response} ${item.cat}`);
-  const wiki = `https://en.wikipedia.org/wiki/Special:Search?search=${query}`;
-  const yt = `https://www.youtube.com/results?search_query=${query}`;
-
-  div.innerHTML = `
-    <div class="feedCardTitle">${escapeHtml(item.cat)} • $${item.value} • ${statusLabel}</div>
-    <div class="feedCardSub">Clue → Correct response</div>
-    <div class="feedBody">
-      <div><strong>Clue:</strong> ${escapeHtml(item.clue)}</div>
-      <div style="margin-top:8px;"><strong>Correct:</strong> ${escapeHtml(item.response)}</div>
-      <div style="margin-top:10px;">${escapeHtml(buildExplanation(item))}</div>
-      <div style="margin-top:10px;"><strong>Drill:</strong> Say the response first, then justify it in one sentence. Repeat 3 times.</div>
-    </div>
-    <div class="feedLinks">
-      <a class="link" href="${wiki}" target="_blank" rel="noreferrer">Wikipedia</a>
-      <a class="link" href="${yt}" target="_blank" rel="noreferrer">YouTube</a>
-    </div>
-  `;
-  return div;
-}
-
-function buildExplanation(item) {
-  const resp = item.response.replace(/^(who|what)\s+is\s+/i, "").replace(/\?$/, "");
-  return `Anchor: ${resp}. Translate the clue into a one-line definition, then retrieve the proper noun. If you hesitated, you lacked an immediate anchor—fix by drilling 5 fast prompts using the response as the starting cue.`;
-}
-
-/* ---------------- Escaping ---------------- */
-
-function escapeHtml(s) {
-  return String(s)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-/* ---------------- UI wiring ---------------- */
-
-function applySettingsFromUI() {
-  state.buzzWindowMs = Math.round(clampNum(ui.buzzWindowSec.value, 1, 15, 5) * 1000);
-  state.blankMs = Math.round(clampNum(ui.blankMs.value, 250, 5000, 2000));
-}
-
-ui.btnSettings.addEventListener("click", () => ui.settingsModal.showModal());
-
-ui.voiceSelect.addEventListener("change", () => {
-  state.selectedVoiceURI = ui.voiceSelect.value || null;
-  localStorage.setItem("jt_voice_uri", ui.voiceSelect.value || "");
-});
-
-ui.buzzWindowSec.addEventListener("change", applySettingsFromUI);
-ui.blankMs.addEventListener("change", applySettingsFromUI);
-
-ui.btnNewBoard.addEventListener("click", () => {
-  applySettingsFromUI();
-  try { buildBoard(); } catch (e) { setStatus(String(e)); }
-});
-
-ui.btnNewBoard2.addEventListener("click", () => {
-  applySettingsFromUI();
-  try { buildBoard(); } catch (e) { setStatus(String(e)); showView(ui.boardView); }
-});
-
-ui.btnBackToBoardTop.addEventListener("click", () => {
-  if (state.active) {
-    const { catIndex, value } = state.active;
-    markCellUsed(catIndex, value);
-  }
-  showView(ui.boardView);
-  setStatus("Tap the next dollar amount.");
-});
-
-ui.fileInput.addEventListener("change", async (e) => {
-  const f = e.target.files?.[0];
-  if (!f) return;
-
-  try {
-    const text = await f.text();
-    const name = (f.name || "").toLowerCase();
-    const looksTSV = name.endsWith(".tsv") || detectTSVByContent(text);
-
-    let cleaned;
-    if (name.endsWith(".json")) {
-      const arr = JSON.parse(text);
-      if (!Array.isArray(arr)) throw new Error("JSON must be an array");
-      cleaned = arr.map(normalizeClueObj).filter(x => x.clue && x.response);
-    } else if (looksTSV) {
-      cleaned = parseJeopardyTSV(text);
-    } else {
-      cleaned = parseCSV(text);
-    }
-
-    if (!cleaned.length) throw new Error("Import produced 0 clues.");
-
-    state.bank = cleaned;
-    ui.importStatus.textContent = `Imported: ${cleaned.length} clues`;
-    setStatus("Dataset imported. Tap New Board.");
-  } catch (err) {
-    ui.importStatus.textContent = `Import failed: ${String(err)}`;
-    setStatus("Import failed.");
-  } finally {
-    ui.fileInput.value = "";
-  }
-});
-
-/* ---------------- Init ---------------- */
-
-function init() {
-  setScore(0);
-  applySettingsFromUI();
-
-  if ("speechSynthesis" in window) {
-    window.speechSynthesis.onvoiceschanged = loadVoices;
-  }
-  loadVoices();
-
-  setStatus("Import a TSV in Settings, then tap New Board.");
-  ui.importStatus.textContent = "No import yet.";
-  showView(ui.boardView);
-}
-
-init();
+  // Secondary exhaustion guard: if every cell is disabled, force results
+  if (state.boardCats.length) {
+    const disabled = ui.board.querySelectorAll("button.boardCellBtn
