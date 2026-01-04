@@ -151,7 +151,11 @@ button,select,input{font:inherit}
   background:rgba(255,255,255,.04);
   overflow:hidden;
 }
-.progressFill{height:100%;width:0%;}
+.progressFill{
+  height:100%;
+  width:0%;
+  background: var(--accent);
+}
 .progressLabel{color:var(--muted);font-weight:800;font-size:12px}
 
 .btnBuzz{
