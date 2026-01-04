@@ -1,183 +1,161 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Jeopardy Trainer (Local Demo)</title>
-  <link rel="stylesheet" href="./styles.css" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Jeopardy Trainer</title>
+  <link rel="stylesheet" href="styles.css?v=2">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">
-      <div class="logo">JT</div>
-      <div>
-        <div class="title">Jeopardy Trainer</div>
-        <div class="subtitle">Tap-to-buzz • Timed clues • Score like the show</div>
-      </div>
+    <div class="brand">Jeopardy Trainer</div>
+
+    <div class="scoreWrap">
+      <div class="scoreLabel">Score</div>
+      <div id="score" class="scoreValue">0</div>
     </div>
 
-    <div class="status">
-      <div class="pill">Score: <span id="score">0</span></div>
-      <div class="pill">Clue <span id="clueIndex">0</span>/<span id="clueTotal">0</span></div>
-      <div class="pill">Time: <span id="timeLeft">0.0</span>s</div>
-      <button id="btnSettings" class="ghost">Settings</button>
+    <div class="topActions">
+      <button id="btnNewBoard" class="btn">New Board</button>
+      <button id="btnSettings" class="btn btnGhost">Settings</button>
     </div>
   </header>
 
-  <main class="layout">
-    <!-- GAME -->
-    <section id="gameView" class="panel">
-      <div class="boardHeader">
-        <div class="meta">
-          <div class="cat" id="category">—</div>
-          <div class="val" id="value">$0</div>
-        </div>
-        <div class="meta2">
-          <div class="roundName" id="roundName">Round 1</div>
-          <div class="hint" id="hint">Tap anywhere to buzz when you know it</div>
-        </div>
-      </div>
+  <main class="main">
 
-      <div id="clueCard" class="clueCard" tabindex="0" role="button" aria-label="Tap to buzz">
-        <div id="clueText" class="clueText">Press “Start Round”</div>
-        <div id="blankOverlay" class="blankOverlay hidden">
-          <div class="blankMsg">2 seconds to answer…</div>
-        </div>
-      </div>
-
-      <div class="controls">
-        <button id="btnStart" class="primary">Start Round</button>
-        <button id="btnSkip" class="ghost" disabled>Skip</button>
-        <button id="btnCorrect" class="good" disabled>Got it ✅</button>
-        <button id="btnWrong" class="bad" disabled>Missed ❌</button>
-      </div>
-
-      <div class="smallRow">
-        <div class="small">
-          <div class="smallLabel">Read aloud</div>
-          <label class="switch">
-            <input id="ttsToggle" type="checkbox" checked />
-            <span class="slider"></span>
-          </label>
-        </div>
-
-        <div class="small">
-          <div class="smallLabel">Buzz time limit</div>
-          <select id="timeLimit">
-            <option value="5">5s (Jeopardy-style)</option>
-            <option value="6">6s</option>
-            <option value="7">7s</option>
+    <!-- BOARD VIEW -->
+    <section id="boardView" class="view">
+      <div class="boardControls">
+        <div class="control">
+          <div class="controlLabel">Categories</div>
+          <select id="categoriesCount" class="select">
+            <option value="3">3</option>
+            <option value="4" selected>4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
           </select>
         </div>
 
-        <div class="small">
-          <div class="smallLabel">Answer blank</div>
-          <select id="blankTime">
-            <option value="2000">2s</option>
-            <option value="1500">1.5s</option>
-            <option value="2500">2.5s</option>
-          </select>
+        <div class="control">
+          <div class="controlLabel">Values</div>
+          <div class="pill">200 • 400 • 600 • 800 • 1000</div>
+        </div>
+
+        <div class="control grow">
+          <div id="statusLine" class="statusLine">Import a TSV in Settings, then tap New Board.</div>
         </div>
       </div>
 
-      <div class="footerNote">
-        Import your own clue set (CSV/JSON) in Settings.
-      </div>
+      <div id="board" class="board"></div>
     </section>
 
-    <!-- LEARNING FEED -->
-    <section id="learnView" class="panel hidden">
-      <div class="learnHeader">
+    <!-- CLUE VIEW -->
+    <section id="clueView" class="view hidden">
+      <div class="clueHeader">
         <div>
-          <div class="learnTitle">Review Feed</div>
-          <div class="learnSubtitle">Fast 5-minute refreshers on weak topics</div>
+          <div id="clueCategory" class="clueCategory">CATEGORY</div>
+          <div id="clueValue" class="clueValue">$200</div>
         </div>
-        <button id="btnNextRound" class="primary">Start Next Round</button>
+        <button id="btnBackToBoardTop" class="btn btnGhost">Back</button>
       </div>
 
-      <div id="summary" class="summary"></div>
+      <div class="clueCard">
+        <div id="clueText" class="clueText"></div>
 
-      <div class="feedWrap">
-        <div class="feedHint">Scroll vertically (snap cards). Each card is a 1–2 minute micro-lesson.</div>
-        <div id="feed" class="feed"></div>
+        <div id="progressWrap" class="progressWrap hidden">
+          <div class="progressBar"><div id="progressFill" class="progressFill"></div></div>
+          <div id="progressLabel" class="progressLabel">Buzz window: 5.0s</div>
+        </div>
+
+        <button id="btnBuzz" class="btnBuzz hidden" aria-label="Buzz in">BUZZ</button>
+
+        <div id="blankScreen" class="blankScreen hidden"></div>
+
+        <div id="resultActions" class="resultActions hidden">
+          <button id="btnGotIt" class="btn btnGood">Got it</button>
+          <button id="btnMissed" class="btn btnBad">Missed</button>
+        </div>
+
+        <div id="noBuzzActions" class="noBuzzActions hidden">
+          <button id="btnBackToBoard" class="btn">Back to Board</button>
+        </div>
       </div>
     </section>
+
+    <!-- RESULTS VIEW -->
+    <section id="resultsView" class="view hidden">
+      <div class="resultsTop">
+        <div class="resultsTitle">Board Results</div>
+        <button id="btnNewBoard2" class="btn">New Board</button>
+      </div>
+
+      <div id="resultsSummary" class="resultsSummary"></div>
+
+      <div class="feedTitle">Missed + Skipped Review</div>
+      <div id="feed" class="feed"></div>
+    </section>
+
   </main>
 
-  <!-- SETTINGS MODAL -->
+  <!-- SETTINGS -->
   <dialog id="settingsModal" class="modal">
-    <form method="dialog" class="modalInner">
+    <form method="dialog" class="modalBody">
       <div class="modalHeader">
-        <div>
-          <div class="modalTitle">Settings</div>
-          <div class="modalSubtitle">Load your clue set and optionally enable AI summaries.</div>
-        </div>
-        <button class="ghost" value="cancel">Close</button>
+        <div class="modalTitle">Settings</div>
+        <button class="btn btnGhost" value="close">Close</button>
       </div>
 
-      <div class="grid">
-        <div class="card">
-          <div class="cardTitle">Import clue set</div>
-          <div class="cardBody">
-            <div class="muted">CSV columns:</div>
-            <code>id,round,category,value,clue,response,subject_tags,source_url</code>
-            <div class="muted">JSON: array of same fields.</div>
-<input id="fileInput" type="file" accept=".csv,.tsv,.json" />
-            <button id="btnLoadSample" class="ghost" type="button">Reload built-in sample</button>
-            <div id="importStatus" class="muted"></div>
+      <div class="settingsGrid">
+        <div class="settingBlock">
+          <div class="settingTitle">Import dataset</div>
+          <input id="fileInput" type="file" accept=".tsv,.csv,.json,.txt" />
+          <div id="importStatus" class="importStatus">No import yet.</div>
+          <div class="hint">TSV supported: jwolle1 seasons/seasonXX.tsv format.</div>
+        </div>
+
+        <div class="settingBlock">
+          <div class="settingTitle">Reader</div>
+          <label class="row">
+            <input id="ttsToggle" type="checkbox" checked />
+            <span>Read clues aloud (system voice)</span>
+          </label>
+
+          <div class="row">
+            <span class="rowLabel">Voice</span>
+            <select id="voiceSelect" class="select"></select>
+          </div>
+
+          <div class="hint">
+            ChatGPT-like voices require OpenAI Audio/TTS via API. Do not place API keys in browser apps.
           </div>
         </div>
 
-        <div class="card">
-          <div class="cardTitle">AI lesson generation (optional)</div>
-          <div class="cardBody">
-            <div class="muted">
-              If you supply an OpenAI API key, the feed cards will be generated per weak topic.
-              Otherwise, the app uses a built-in template generator.
-            </div>
-            <label class="row">
-              <span>OpenAI API key</span>
-              <input id="openaiKey" type="password" placeholder="sk-..." autocomplete="off" />
-            </label>
-            <label class="row">
-              <span>Model</span>
-              <input id="openaiModel" type="text" value="gpt-4.1-mini" />
-            </label>
-            <label class="row">
-              <span>Enable AI</span>
-              <select id="aiEnable">
-                <option value="0">Off</option>
-                <option value="1">On (requires key)</option>
-              </select>
-            </label>
-            <div class="muted">
-              Note: running from <code>file://</code> blocks API calls. Use the local server steps below.
-            </div>
+        <div class="settingBlock">
+          <div class="settingTitle">Timing</div>
+
+          <div class="row">
+            <span class="rowLabel">Buzz window (sec)</span>
+            <input id="buzzWindowSec" class="input" type="number" min="1" max="15" step="0.5" value="5" />
+          </div>
+
+          <div class="row">
+            <span class="rowLabel">Blank screen (ms)</span>
+            <input id="blankMs" class="input" type="number" min="250" max="5000" step="250" value="2000" />
+          </div>
+
+          <div class="hint">
+            Countdown starts only after reading finishes (speech end event + fallback estimate).
           </div>
         </div>
 
-        <div class="card">
-          <div class="cardTitle">Round behavior</div>
-          <div class="cardBody">
-            <div class="muted">Next round includes: (a) some review from weak topics, (b) some new categories.</div>
-            <label class="row">
-              <span>Round length (clues)</span>
-              <input id="roundLen" type="number" min="5" max="60" value="20" />
-            </label>
-            <label class="row">
-              <span>Review ratio</span>
-              <input id="reviewRatio" type="number" min="0" max="1" step="0.1" value="0.4" />
-            </label>
-          </div>
+        <div class="settingBlock">
+          <div class="settingTitle">Board rule</div>
+          <div class="hint">Board pulls Round 1 clues with values 200–1000.</div>
         </div>
-      </div>
-
-      <div class="modalFooter">
-        <button class="ghost" value="cancel">Close</button>
       </div>
     </form>
   </dialog>
 
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="app.js?v=2"></script>
 </body>
 </html>
