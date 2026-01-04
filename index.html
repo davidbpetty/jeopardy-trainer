@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Jeopardy Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
   <header class="topbar">
@@ -17,7 +17,7 @@
 
     <div class="topActions">
       <button id="btnNewBoard" class="btn">New Board</button>
-      <button id="btnSettings" class="btn btnGhost" type="button">Settings</button>
+      <button id="btnSettings" class="btn btnGhost">Settings</button>
     </div>
   </header>
 
@@ -56,7 +56,7 @@
           <div id="clueCategory" class="clueCategory">CATEGORY</div>
           <div id="clueValue" class="clueValue">$200</div>
         </div>
-        <button id="btnBackToBoardTop" class="btn btnGhost" type="button">Back</button>
+        <button id="btnBackToBoardTop" class="btn btnGhost">Back</button>
       </div>
 
       <div class="clueCard">
@@ -69,17 +69,17 @@
           <div id="progressLabel" class="progressLabel">Buzz window: 5.0s</div>
         </div>
 
-        <button id="btnBuzz" class="btnBuzz hidden" type="button" aria-label="Buzz in">BUZZ</button>
+        <button id="btnBuzz" class="btnBuzz hidden" aria-label="Buzz in">BUZZ</button>
 
         <div id="blankScreen" class="blankScreen hidden"></div>
 
         <div id="resultActions" class="resultActions hidden">
-          <button id="btnGotIt" class="btn btnGood" type="button">Got it</button>
-          <button id="btnMissed" class="btn btnBad" type="button">Missed</button>
+          <button id="btnGotIt" class="btn btnGood">Got it</button>
+          <button id="btnMissed" class="btn btnBad">Missed</button>
         </div>
 
         <div id="noBuzzActions" class="noBuzzActions hidden">
-          <button id="btnBackToBoard" class="btn" type="button">Back to Board</button>
+          <button id="btnBackToBoard" class="btn">Back to Board</button>
         </div>
       </div>
     </section>
@@ -88,7 +88,7 @@
     <section id="resultsView" class="view hidden">
       <div class="resultsTop">
         <div class="resultsTitle">Board Results</div>
-        <button id="btnNewBoard2" class="btn" type="button">New Board</button>
+        <button id="btnNewBoard2" class="btn">New Board</button>
       </div>
 
       <div id="resultsSummary" class="resultsSummary"></div>
@@ -104,7 +104,7 @@
     <form method="dialog" class="modalBody">
       <div class="modalHeader">
         <div class="modalTitle">Settings</div>
-        <button class="btn btnGhost" value="close" type="button">Close</button>
+        <button class="btn btnGhost" value="close">Close</button>
       </div>
 
       <div class="settingsGrid">
@@ -164,6 +164,10 @@
           <div class="hint">
             Key is stored only in this browser's local storage (not committed to GitHub). Requests still send the key from your phone to OpenAI.
           </div>
+
+          <div class="hint">
+            If OpenAI TTS is enabled and a key is present, it will be used; otherwise the system voice is used.
+          </div>
         </div>
 
         <div class="settingBlock">
@@ -180,7 +184,7 @@
           </div>
 
           <div class="hint">
-            Countdown starts only after reading finishes.
+            Countdown starts only after reading finishes (speech end event + fallback estimate).
           </div>
         </div>
 
@@ -192,6 +196,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="app.js?v=4"></script>
+  <script type="module" src="app.js?v=3"></script>
 </body>
 </html>
