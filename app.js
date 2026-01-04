@@ -1,500 +1,760 @@
-/* Jeopardy Trainer — Board Mode (mobile-first)
-   - Full board: N categories x 5 values
-   - Random category; one random clue per value in that category
-   - Countdown starts ONLY after TTS finishes reading clue (robust iOS gating)
-   - Buzz within window => blank screen => reveal => Got it / Missed (score +/- value)
-   - No buzz => reveal => Back to board (no score change)
-   - Used clues removed from board
-   - End => stats + missed/skipped review cards
-   - Settings modal: iOS-safe <dialog> fallback (open attribute)
-   - Optional ElevenLabs TTS via user-entered key stored in localStorage
+// Jeopardy Trainer — static, iOS-friendly, no frameworks, ES module.
 
-   ElevenLabs TTS:
-   POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128
-   Header: xi-api-key
-*/
+const ELEVEN_API_KEY = "PASTE_KEY_HERE";
+const ELEVEN_VOICE_ID = "PASTE_VOICE_ID_HERE";
+const ELEVEN_MODEL_ID = "eleven_multilingual_v2";
+const ELEVEN_OUTPUT_FORMAT = "mp3_44100_128";
 
-const $ = (id) => document.getElementById(id);
+const VALUES_R1 = [200, 400, 600, 800, 1000];
+const STORAGE_KEY = "jt_settings_v1";
 
-const ui = {
-  score: $("score"),
-  btnNewBoard: $("btnNewBoard"),
-  btnNewBoard2: $("btnNewBoard2"),
-  btnSettings: $("btnSettings"),
-  settingsModal: $("settingsModal"),
+const $ = (sel) => document.querySelector(sel);
+const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
+const now = () => performance.now();
 
-  boardView: $("boardView"),
-  board: $("board"),
-  statusLine: $("statusLine"),
-  categoriesCount: $("categoriesCount"),
+const els = {
+  statusLine: $("#statusLine"),
+  scoreLine: $("#scoreLine"),
 
-  clueView: $("clueView"),
-  clueCategory: $("clueCategory"),
-  clueValue: $("clueValue"),
-  clueText: $("clueText"),
-  btnBackToBoardTop: $("btnBackToBoardTop"),
+  boardView: $("#boardView"),
+  boardWrap: $("#boardWrap"),
+  categoryCount: $("#categoryCount"),
+  newBoardBtn: $("#newBoardBtn"),
 
-  progressWrap: $("progressWrap"),
-  progressFill: $("progressFill"),
-  progressLabel: $("progressLabel"),
-  btnBuzz: $("btnBuzz"),
-  blankScreen: $("blankScreen"),
-  resultActions: $("resultActions"),
-  btnGotIt: $("btnGotIt"),
-  btnMissed: $("btnMissed"),
-  noBuzzActions: $("noBuzzActions"),
-  btnBackToBoard: $("btnBackToBoard"),
+  clueView: $("#clueView"),
+  clueBackBtn: $("#clueBackBtn"),
+  clueMeta: $("#clueMeta"),
+  clueStage: $("#clueStage"),
+  clueText: $("#clueText"),
+  progressWrap: $("#progressWrap"),
+  progressFill: $("#progressFill"),
+  progressLabel: $("#progressLabel"),
+  clueActions: $("#clueActions"),
+  buzzBtn: $("#buzzBtn"),
+  revealWrap: $("#revealWrap"),
+  responseText: $("#responseText"),
+  resultButtons: $("#resultButtons"),
+  backOnlyButtons: $("#backOnlyButtons"),
+  gotItBtn: $("#gotItBtn"),
+  missedBtn: $("#missedBtn"),
+  backToBoardBtn: $("#backToBoardBtn"),
 
-  resultsView: $("resultsView"),
-  resultsSummary: $("resultsSummary"),
-  feed: $("feed"),
+  resultsView: $("#resultsView"),
+  resultsSummary: $("#resultsSummary"),
+  categorySummary: $("#categorySummary"),
+  reviewFeed: $("#reviewFeed"),
+  resultsNewBoardBtn: $("#resultsNewBoardBtn"),
 
-  fileInput: $("fileInput"),
-  importStatus: $("importStatus"),
+  settingsBtn: $("#settingsBtn"),
+  settingsDialog: $("#settingsDialog"),
+  settingsForm: $("#settingsForm"),
+  datasetFile: $("#datasetFile"),
+  useEleven: $("#useEleven"),
+  useSystem: $("#useSystem"),
+  systemVoice: $("#systemVoice"),
+  elevenVoiceId: $("#elevenVoiceId"),
+  elevenModelId: $("#elevenModelId"),
+  elevenOutputFmt: $("#elevenOutputFmt"),
+  buzzSeconds: $("#buzzSeconds"),
+  blankMs: $("#blankMs"),
+  saveSettingsBtn: $("#saveSettingsBtn"),
+  closeSettingsBtn: $("#closeSettingsBtn"),
 
-  // System TTS
-  ttsToggle: $("ttsToggle"),
-  voiceSelect: $("voiceSelect"),
+  dialogFallback: $("#dialogFallback"),
+  fallbackBody: $("#fallbackBody"),
+  fallbackCloseBtn: $("#fallbackCloseBtn"),
+  fallbackSaveBtn: $("#fallbackSaveBtn"),
 
-  // Timing
-  buzzWindowSec: $("buzzWindowSec"),
-  blankMs: $("blankMs"),
-
-  // ElevenLabs TTS
-  elevenTtsToggle: $("elevenTtsToggle"),
-  elevenApiKey: $("elevenApiKey"),
-  elevenVoiceId: $("elevenVoiceId"),
-  elevenModelSelect: $("elevenModelSelect"),
-  elevenOutputFormat: $("elevenOutputFormat"),
+  audioPlayer: $("#audioPlayer"),
 };
-
-const VALUES = [200, 400, 600, 800, 1000];
-
-/** iOS autoplay priming: must be called from a user gesture */
-const SILENT_WAV =
-  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
 
 const state = {
-  bank: [],
-
-  boardCats: [],
-  usedCount: 0,
-  totalCells: 0,
-
-  active: null,
-
+  dataset: [],
+  board: null,
   score: 0,
   outcomes: [],
-
-  rafId: null,
-  buzzDeadline: 0,
-
-  selectedVoiceURI: null,
-  buzzWindowMs: 5000,
-  blankMs: 2000,
-
-  ttsAudio: null,
+  current: null,
+  audioPrimed: false,
+  countdown: {
+    rafId: null,
+    running: false,
+    startT: 0,
+    durationMs: 5000,
+  },
+  speech: {
+    synthUtterance: null,
+    speakingPollId: null,
+  },
+  settings: {
+    useEleven: true,
+    useSystem: true,
+    systemVoiceURI: "",
+    buzzSeconds: 5.0,
+    blankMs: 2000,
+    elevenVoiceId: ELEVEN_VOICE_ID,
+    elevenModelId: ELEVEN_MODEL_ID,
+    elevenOutputFmt: ELEVEN_OUTPUT_FORMAT,
+  },
 };
 
-function setStatus(msg) {
-  ui.statusLine.textContent = msg;
-}
-function setScore(n) {
-  state.score = n;
-  ui.score.textContent = String(n);
-}
+init();
 
-function showView(which) {
-  ui.boardView.classList.add("hidden");
-  ui.clueView.classList.add("hidden");
-  ui.resultsView.classList.add("hidden");
-  which.classList.remove("hidden");
-}
-
-function clampNum(n, lo, hi, fallback) {
-  const x = Number(n);
-  if (Number.isNaN(x)) return fallback;
-  return Math.max(lo, Math.min(hi, x));
-}
-
-function normalizeCategory(s) {
-  return String(s || "UNKNOWN").trim();
-}
-
-function normalizeClueObj(x) {
-  return {
-    id: String(x.id || crypto.randomUUID()),
-    round: String(x.round || "1").trim(),
-    category: normalizeCategory(x.category),
-    value: Number(x.value || 0) || 0,
-    clue: String(x.clue || "").trim(),
-    response: String(x.response || "").trim(),
-    air_date: String(x.air_date || ""),
-    source_url: String(x.source_url || ""),
-    subject_tags: Array.isArray(x.subject_tags) ? x.subject_tags : [],
-  };
-}
-
-/* ---------------- Import parsing ---------------- */
-
-function parseDelimited(text, delimiter) {
-  const rows = [];
-  let i = 0,
-    field = "",
-    row = [],
-    inQuotes = false;
-
-  const pushField = () => {
-    row.push(field);
-    field = "";
-  };
-  const pushRow = () => {
-    rows.push(row);
-    row = [];
-  };
-
-  while (i < text.length) {
-    const c = text[i];
-
-    if (inQuotes) {
-      if (c === '"' && text[i + 1] === '"') {
-        field += '"';
-        i += 2;
-        continue;
-      }
-      if (c === '"') {
-        inQuotes = false;
-        i++;
-        continue;
-      }
-      field += c;
-      i++;
-      continue;
-    } else {
-      if (c === '"') {
-        inQuotes = true;
-        i++;
-        continue;
-      }
-      if (c === delimiter) {
-        pushField();
-        i++;
-        continue;
-      }
-      if (c === "\n") {
-        pushField();
-        pushRow();
-        i++;
-        continue;
-      }
-      if (c === "\r") {
-        i++;
-        continue;
-      }
-      field += c;
-      i++;
-      continue;
-    }
-  }
-
-  pushField();
-  pushRow();
-  return rows;
-}
-
-function parseCSV(text) {
-  const rows = parseDelimited(text, ",");
-  const header = (rows.shift() || []).map((h) => h.trim());
-  const idx = Object.fromEntries(header.map((h, j) => [h, j]));
-  const get = (r, name) => r[idx[name]] ?? "";
-
-  return rows
-    .filter((r) => r.some((x) => String(x).trim().length))
-    .map((r) =>
-      normalizeClueObj({
-        id: get(r, "id") || crypto.randomUUID(),
-        round: get(r, "round") || "1",
-        category: get(r, "category") || "UNKNOWN",
-        value: parseInt(String(get(r, "value") || "0").replace(/[^0-9]/g, ""), 10) || 0,
-        clue: get(r, "clue") || "",
-        response: get(r, "response") || "",
-        subject_tags: String(get(r, "subject_tags") || "")
-          .split("|")
-          .map((s) => s.trim())
-          .filter(Boolean),
-        source_url: get(r, "source_url") || "",
-      })
-    )
-    .filter((x) => x.clue && x.response);
-}
-
-function parseJeopardyTSV(text) {
-  const rows = parseDelimited(text, "\t");
-  const header = (rows.shift() || []).map((h) => h.trim());
-  const idx = Object.fromEntries(header.map((h, j) => [h, j]));
-  const get = (r, name) => r[idx[name]] ?? "";
-
-  return rows
-    .filter((r) => r.some((x) => String(x).trim().length))
-    .map((r, k) => {
-      const roundRaw = String(get(r, "round") || "").trim();
-      const valueRaw = String(get(r, "clue_value") || "0");
-      const value = parseInt(valueRaw.replace(/[^0-9]/g, ""), 10) || 0;
-
-      return normalizeClueObj({
-        id: `${String(get(r, "air_date") || "nodate").trim()}_${roundRaw || "r"}_${k}`,
-        round: roundRaw || "1",
-        category: get(r, "category") || "UNKNOWN",
-        value,
-        clue: get(r, "answer") || "",
-        response: get(r, "question") || "",
-        air_date: get(r, "air_date") || "",
-      });
-    })
-    .filter((x) => x.clue && x.response);
-}
-
-function detectTSVByContent(text) {
-  const firstLine = text.split(/\r?\n/, 1)[0] || "";
-  return (
-    firstLine.includes("\t") &&
-    (firstLine.includes("clue_value") ||
-      firstLine.includes("air_date") ||
-      firstLine.includes("answer") ||
-      firstLine.includes("question"))
-  );
-}
-
-/* ---------------- Voice / TTS ---------------- */
-
-let cachedVoices = [];
-
-function loadVoices() {
-  if (!("speechSynthesis" in window)) {
-    ui.voiceSelect.innerHTML = `<option value="">(No speech available)</option>`;
-    return;
-  }
-  cachedVoices = window.speechSynthesis.getVoices() || [];
-  ui.voiceSelect.innerHTML = "";
-
-  if (!cachedVoices.length) {
-    ui.voiceSelect.innerHTML = `<option value="">(Voices loading…)</option>`;
-    return;
-  }
-
-  const saved = localStorage.getItem("jt_voice_uri") || "";
-  let found = false;
-
-  for (const v of cachedVoices) {
-    const opt = document.createElement("option");
-    opt.value = v.voiceURI;
-    opt.textContent = `${v.name} — ${v.lang}${v.default ? " (default)" : ""}`;
-    if (v.voiceURI === saved) {
-      opt.selected = true;
-      found = true;
-    }
-    ui.voiceSelect.appendChild(opt);
-  }
-
-  if (!found) {
-    ui.voiceSelect.value = "";
-    localStorage.setItem("jt_voice_uri", "");
-  }
-
-  state.selectedVoiceURI = ui.voiceSelect.value || null;
-}
-
-function getSelectedVoice() {
-  const uri = state.selectedVoiceURI;
-  if (!uri) return null;
-  return cachedVoices.find((v) => v.voiceURI === uri) || null;
-}
-
-function estimateSpeechMs(text) {
-  const words = String(text || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean).length;
-  const ms = Math.round(words * 420);
-  return clampNum(ms, 1200, 15000, 6000);
-}
-
-function delay(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function waitForSpeechSynthesisToFinish(maxMs) {
-  if (!("speechSynthesis" in window)) return;
-  const startedAt = performance.now();
-  while (performance.now() - startedAt < maxMs) {
-    if (!window.speechSynthesis.speaking) return;
-    await delay(80);
-  }
-}
-
-async function speakSystemAsync(text) {
-  if (!ui.ttsToggle.checked) return;
-  if (!("speechSynthesis" in window)) return;
-
+function init() {
   try {
-    window.speechSynthesis.cancel();
-  } catch {}
+    loadSettings();
+    syncSettingsUIFromState();
+    attachEvents();
+    hydrateVoiceList();
 
-  const estimated = estimateSpeechMs(text);
+    setStatus("Import a TSV/CSV/JSON dataset in Settings to begin.", "info");
+    renderScore();
+    renderBoardShell();
+  } catch (err) {
+    console.error(err);
+    setStatus("App failed to initialize. Refresh Safari and try again.", "error");
+  }
+}
 
-  await new Promise((resolve) => {
-    const u = new SpeechSynthesisUtterance(text);
-    const v = getSelectedVoice();
-    if (v) u.voice = v;
+function attachEvents() {
+  // Top bar
+  els.settingsBtn.addEventListener("click", () => openSettings());
 
-    let done = false;
-    const finish = () => {
-      if (!done) {
-        done = true;
-        resolve();
-      }
-    };
-
-    const hard = window.setTimeout(finish, estimated + 1200);
-
-    const wrappedFinish = () => {
-      window.clearTimeout(hard);
-      finish();
-    };
-    u.onend = wrappedFinish;
-    u.onerror = wrappedFinish;
-
-    window.speechSynthesis.speak(u);
+  // Board
+  els.newBoardBtn.addEventListener("click", () => {
+    tryNewBoard();
   });
 
-  await waitForSpeechSynthesisToFinish(estimated + 1500);
+  els.categoryCount.addEventListener("change", () => {
+    if (!state.dataset.length) {
+      setStatus("No dataset loaded. Import in Settings.", "warn");
+      renderBoardShell();
+      return;
+    }
+    tryNewBoard();
+  });
+
+  // Clue
+  els.clueBackBtn.addEventListener("click", () => {
+    // Treat as skipped if unresolved; still consumes cell.
+    if (!state.current) return;
+    finalizeClue("skipped");
+    goBoard();
+  });
+
+  els.buzzBtn.addEventListener("click", () => {
+    onBuzz();
+  });
+
+  els.gotItBtn.addEventListener("click", () => {
+    if (!state.current) return;
+    applyScore(+state.current.value);
+    finalizeClue("correct");
+    goBoard();
+  });
+
+  els.missedBtn.addEventListener("click", () => {
+    if (!state.current) return;
+    applyScore(-state.current.value);
+    finalizeClue("wrong");
+    goBoard();
+  });
+
+  els.backToBoardBtn.addEventListener("click", () => {
+    if (!state.current) return;
+    finalizeClue("skipped");
+    goBoard();
+  });
+
+  // Results
+  els.resultsNewBoardBtn.addEventListener("click", () => {
+    tryNewBoard(true);
+  });
+
+  // Settings
+  els.saveSettingsBtn.addEventListener("click", () => {
+    saveSettingsFromUI();
+    closeSettings();
+  });
+
+  // Dataset import
+  els.datasetFile.addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    await importDatasetFile(file);
+    // reset input so same file can be re-selected
+    els.datasetFile.value = "";
+  });
+
+  // Fallback modal
+  els.fallbackCloseBtn.addEventListener("click", () => closeSettings());
+  els.fallbackSaveBtn.addEventListener("click", () => {
+    saveSettingsFromUI();
+    closeSettings();
+  });
+
+  // Keep Settings button always clickable even during overlays
+  document.addEventListener("touchstart", () => {}, { passive: true });
 }
 
-function getElevenSettings() {
-  const enabled = ui.elevenTtsToggle ? ui.elevenTtsToggle.checked : false;
-  const apiKey = ui.elevenApiKey ? (ui.elevenApiKey.value || "").trim() : "";
-  const voiceId = ui.elevenVoiceId ? (ui.elevenVoiceId.value || "").trim() : "";
-  const modelId = ui.elevenModelSelect ? (ui.elevenModelSelect.value || "eleven_multilingual_v2") : "eleven_multilingual_v2";
-  const outputFormat = ui.elevenOutputFormat ? (ui.elevenOutputFormat.value || "mp3_44100_128") : "mp3_44100_128";
-  return { enabled, apiKey, voiceId, modelId, outputFormat };
+function setStatus(msg, level = "info") {
+  const prefix =
+    level === "error" ? "Error: " :
+    level === "warn" ? "Warning: " :
+    "";
+  els.statusLine.textContent = `${prefix}${String(msg || "")}`;
 }
 
-/**
- * iOS Safari blocks audio play if it is not user-initiated.
- * Prime the audio element during a user gesture (board cell tap) so later playback works.
- */
-function primeTtsAudioOnce() {
-  if (!state.ttsAudio) state.ttsAudio = new Audio();
-  const a = state.ttsAudio;
-  a.playsInline = true;
-
-  if (a.__primed) return;
-  a.__primed = true;
-
-  a.muted = true;
-  a.src = SILENT_WAV;
-
-  a.play()
-    .then(() => {
-      a.pause();
-      a.currentTime = 0;
-      a.muted = false;
-    })
-    .catch(() => {
-      a.muted = false;
-    });
+function renderScore() {
+  els.scoreLine.textContent = `$${state.score}`;
 }
 
-async function speakElevenAsync(text) {
-  const { enabled, apiKey, voiceId, modelId, outputFormat } = getElevenSettings();
-  if (!enabled || !apiKey || !voiceId) return false;
+function applyScore(delta) {
+  if (!Number.isFinite(delta)) return;
+  state.score += delta;
+  renderScore();
+}
 
+function loadSettings() {
   try {
-    if (!state.ttsAudio) state.ttsAudio = new Audio();
-    const a = state.ttsAudio;
-    a.playsInline = true;
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return;
 
-    // Per ElevenLabs docs: output_format is a query param; xi-api-key is required header.  [oai_citation:1‡ElevenLabs](https://elevenlabs.io/docs/api-reference/text-to-speech/convert/llms.txt)
-    const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=${encodeURIComponent(outputFormat)}`;
+    state.settings.useEleven = !!parsed.useEleven;
+    state.settings.useSystem = !!parsed.useSystem;
+    state.settings.systemVoiceURI = String(parsed.systemVoiceURI || "");
+    state.settings.buzzSeconds = clamp(Number(parsed.buzzSeconds || 5.0), 1, 15);
+    state.settings.blankMs = clamp(Number(parsed.blankMs || 2000), 250, 5000);
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "xi-api-key": apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text,
-        model_id: modelId,
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75,
-          style: 0,
-          use_speaker_boost: true,
-        },
-      }),
-    });
+    state.settings.elevenVoiceId = String(parsed.elevenVoiceId || ELEVEN_VOICE_ID);
+    state.settings.elevenModelId = String(parsed.elevenModelId || ELEVEN_MODEL_ID);
+    state.settings.elevenOutputFmt = String(parsed.elevenOutputFmt || ELEVEN_OUTPUT_FORMAT);
+  } catch (err) {
+    console.warn("Failed to load settings:", err);
+  }
+}
 
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status}: ${t.slice(0, 300)}`);
+function persistSettings() {
+  try {
+    const payload = {
+      useEleven: state.settings.useEleven,
+      useSystem: state.settings.useSystem,
+      systemVoiceURI: state.settings.systemVoiceURI,
+      buzzSeconds: state.settings.buzzSeconds,
+      blankMs: state.settings.blankMs,
+      elevenVoiceId: state.settings.elevenVoiceId,
+      elevenModelId: state.settings.elevenModelId,
+      elevenOutputFmt: state.settings.elevenOutputFmt,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (err) {
+    console.warn("Failed to persist settings:", err);
+  }
+}
+
+function syncSettingsUIFromState() {
+  els.useEleven.checked = !!state.settings.useEleven;
+  els.useSystem.checked = !!state.settings.useSystem;
+  els.buzzSeconds.value = String(state.settings.buzzSeconds);
+  els.blankMs.value = String(state.settings.blankMs);
+
+  els.elevenVoiceId.value = state.settings.elevenVoiceId || "";
+  els.elevenModelId.value = state.settings.elevenModelId || "";
+  els.elevenOutputFmt.value = state.settings.elevenOutputFmt || "";
+}
+
+function saveSettingsFromUI() {
+  try {
+    state.settings.useEleven = !!els.useEleven.checked;
+    state.settings.useSystem = !!els.useSystem.checked;
+
+    const buzz = clamp(Number(els.buzzSeconds.value || 5.0), 1, 15);
+    // Snap to 0.5 steps defensively
+    state.settings.buzzSeconds = Math.round(buzz * 2) / 2;
+
+    state.settings.blankMs = clamp(Number(els.blankMs.value || 2000), 250, 5000);
+
+    state.settings.systemVoiceURI = String(els.systemVoice.value || "");
+
+    state.settings.elevenVoiceId = String(els.elevenVoiceId.value || ELEVEN_VOICE_ID);
+    state.settings.elevenModelId = String(els.elevenModelId.value || ELEVEN_MODEL_ID);
+    state.settings.elevenOutputFmt = String(els.elevenOutputFmt.value || ELEVEN_OUTPUT_FORMAT);
+
+    persistSettings();
+
+    // Update any live labels
+    if (state.current) {
+      els.progressLabel.textContent = `Buzz window: ${state.settings.buzzSeconds.toFixed(1)}s`;
     }
 
-    const blob = await res.blob();
-    const objUrl = URL.createObjectURL(blob);
+    setStatus("Settings saved.", "info");
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to save settings.", "error");
+  }
+}
 
-    try {
-      window.speechSynthesis?.cancel?.();
-    } catch {}
+function supportsDialog() {
+  return !!(els.settingsDialog && typeof els.settingsDialog.showModal === "function");
+}
 
-    await new Promise((resolve, reject) => {
-      a.onended = resolve;
-      a.onerror = () => reject(new Error("Audio playback failed"));
-      a.src = objUrl;
-      a.currentTime = 0;
-      a.play().catch(reject);
+function openSettings() {
+  try {
+    syncSettingsUIFromState();
+    hydrateVoiceList(); // ensure it stays fresh
+
+    if (supportsDialog()) {
+      els.settingsDialog.showModal();
+      return;
+    }
+
+    // Fallback overlay: clone dialog body into fallback container
+    els.fallbackBody.innerHTML = "";
+    const bodyClone = els.settingsDialog.querySelector(".dialog__body")?.cloneNode(true);
+    if (!bodyClone) {
+      setStatus("Settings UI failed to open.", "error");
+      return;
+    }
+
+    // Move cloned content into fallback, and wire up inputs to existing IDs by mapping values back and forth.
+    // Approach: swap fallback body with the real body node temporarily to preserve IDs.
+    // Simpler: reuse the real dialog body node inside fallback and put it back on close.
+    const realBody = els.settingsDialog.querySelector(".dialog__body");
+    if (!realBody) {
+      setStatus("Settings UI failed to open.", "error");
+      return;
+    }
+
+    // Detach and append to fallback
+    els.fallbackBody.appendChild(realBody);
+
+    els.dialogFallback.hidden = false;
+    document.body.style.overflow = "hidden";
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to open Settings.", "error");
+  }
+}
+
+function closeSettings() {
+  try {
+    if (supportsDialog() && els.settingsDialog.open) {
+      els.settingsDialog.close();
+      return;
+    }
+
+    // If fallback is open, restore the real body back to dialog.
+    if (!els.dialogFallback.hidden) {
+      const panelBody = els.fallbackBody.querySelector(".dialog__body");
+      const dialogForm = els.settingsDialog.querySelector(".dialog__form");
+      const header = els.settingsDialog.querySelector(".dialog__header");
+      const footer = els.settingsDialog.querySelector(".dialog__footer");
+      if (panelBody && dialogForm && header && footer) {
+        // Insert between header and footer
+        dialogForm.insertBefore(panelBody, footer);
+      }
+      els.dialogFallback.hidden = true;
+      document.body.style.overflow = "";
+    }
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to close Settings.", "error");
+  }
+}
+
+function hydrateVoiceList() {
+  try {
+    const synth = window.speechSynthesis;
+    if (!synth) {
+      els.systemVoice.innerHTML = `<option value="">(SpeechSynthesis unavailable)</option>`;
+      return;
+    }
+
+    const voices = synth.getVoices ? synth.getVoices() : [];
+    els.systemVoice.innerHTML = "";
+
+    if (!voices.length) {
+      els.systemVoice.innerHTML = `<option value="">(No voices found)</option>`;
+      // iOS often loads voices asynchronously.
+      setTimeout(() => {
+        try {
+          const v2 = synth.getVoices ? synth.getVoices() : [];
+          if (!v2.length) return;
+          fillVoices(v2);
+        } catch {}
+      }, 250);
+      return;
+    }
+
+    fillVoices(voices);
+  } catch (err) {
+    console.warn("Voice list error:", err);
+    els.systemVoice.innerHTML = `<option value="">(Voice list error)</option>`;
+  }
+
+  function fillVoices(voices) {
+    els.systemVoice.innerHTML = "";
+    const preferred = state.settings.systemVoiceURI || "";
+    const frag = document.createDocumentFragment();
+
+    const sorted = [...voices].sort((a, b) => {
+      const al = `${a.lang || ""} ${a.name || ""}`.toLowerCase();
+      const bl = `${b.lang || ""} ${b.name || ""}`.toLowerCase();
+      return al.localeCompare(bl);
     });
 
-    URL.revokeObjectURL(objUrl);
-    return true;
-  } catch (e) {
-    console.error("ElevenLabs TTS failed:", e);
-    setStatus(`ElevenLabs TTS failed; using system voice. ${String(e).slice(0, 140)}`);
-    return false;
+    for (const v of sorted) {
+      const opt = document.createElement("option");
+      opt.value = v.voiceURI || "";
+      opt.textContent = `${v.name || "Voice"} (${v.lang || "?"})${v.default ? " — default" : ""}`;
+      if (preferred && opt.value === preferred) opt.selected = true;
+      frag.appendChild(opt);
+    }
+    els.systemVoice.appendChild(frag);
+
+    // If preferred not found, keep first
+    if (preferred && !els.systemVoice.value) {
+      els.systemVoice.value = sorted[0]?.voiceURI || "";
+    }
   }
 }
 
-async function speakAsync(text) {
-  const ok = await speakElevenAsync(text);
-  if (ok) return;
-  await speakSystemAsync(text);
-}
+// ------------------------ Dataset import ------------------------
 
-/* ---------------- Board building ---------------- */
-
-function eligibleForBoard(c) {
-  const r = String(c.round || "")
-    .trim()
-    .toUpperCase();
-  const isJ = r === "1" || r === "J" || r === "JEOPARDY";
-  const vOK = VALUES.includes(Number(c.value || 0));
-  return isJ && vOK && c.clue && c.response;
-}
-
-function groupByCategoryAndValue(clues) {
-  const map = new Map();
-  for (const c of clues) {
-    const cat = normalizeCategory(c.category);
-    if (!map.has(cat)) map.set(cat, new Map());
-    const m = map.get(cat);
-    if (!m.has(c.value)) m.set(c.value, []);
-    m.get(c.value).push(c);
+async function importDatasetFile(file) {
+  setStatus(`Importing: ${file.name}…`, "info");
+  let text = "";
+  try {
+    text = await file.text();
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to read file. Try again from iPhone Files app.", "error");
+    return;
   }
-  return map;
+
+  let normalized = [];
+  try {
+    normalized = parseAndNormalize(text, file.name);
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to parse dataset. Check file format.", "error");
+    return;
+  }
+
+  const validR1 = normalized.filter(isValidR1Clue);
+  if (validR1.length < 10) {
+    setStatus("Import produced fewer than 10 valid Round 1 clues. Needs: round=Jeopardy/1/J, value 200–1000, clue+response.", "error");
+    state.dataset = [];
+    state.board = null;
+    state.score = 0;
+    state.outcomes = [];
+    renderScore();
+    renderBoardShell();
+    return;
+  }
+
+  state.dataset = validR1;
+  state.score = 0;
+  state.outcomes = [];
+  state.board = null;
+  renderScore();
+
+  setStatus(`Imported: ${validR1.length} clues. Create a new board.`, "info");
+  tryNewBoard(true);
 }
 
-function shuffle(arr) {
-  const a = [...arr];
+function parseAndNormalize(text, filename = "") {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return [];
+
+  const lower = filename.toLowerCase();
+  const looksJson = trimmed.startsWith("[") || trimmed.startsWith("{");
+  const looksTsv = trimmed.includes("\t");
+  const looksCsv = trimmed.includes(",") && !looksTsv;
+
+  if (lower.endsWith(".json") || looksJson) {
+    const data = JSON.parse(trimmed);
+    const arr = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []);
+    if (!Array.isArray(arr)) throw new Error("JSON is not an array");
+    return arr.map((row, idx) => normalizeRow(row, idx));
+  }
+
+  if (lower.endsWith(".tsv") || looksTsv) {
+    const rows = parseDelimited(trimmed, "\t");
+    return rows.map((row, idx) => normalizeRow(row, idx));
+  }
+
+  if (lower.endsWith(".csv") || looksCsv) {
+    const rows = parseCSV(trimmed);
+    return rows.map((row, idx) => normalizeRow(row, idx));
+  }
+
+  // Fallback: try TSV then CSV then JSON
+  try {
+    const rows = parseDelimited(trimmed, "\t");
+    return rows.map((row, idx) => normalizeRow(row, idx));
+  } catch {}
+  try {
+    const rows = parseCSV(trimmed);
+    return rows.map((row, idx) => normalizeRow(row, idx));
+  } catch {}
+  const data = JSON.parse(trimmed);
+  const arr = Array.isArray(data) ? data : [];
+  return arr.map((row, idx) => normalizeRow(row, idx));
+}
+
+function parseDelimited(text, delim) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+  if (lines.length < 2) return [];
+  const header = lines[0].split(delim).map(s => s.trim());
+  const out = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(delim);
+    const row = {};
+    for (let c = 0; c < header.length; c++) {
+      const key = header[c];
+      if (!key) continue;
+      row[key] = (cols[c] ?? "").trim();
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+// Minimal CSV parser with quoted fields support.
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+  if (lines.length < 2) return [];
+
+  const header = readCsvLine(lines[0]);
+  const out = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = readCsvLine(lines[i]);
+    const row = {};
+    for (let c = 0; c < header.length; c++) {
+      const key = (header[c] ?? "").trim();
+      if (!key) continue;
+      row[key] = (cols[c] ?? "").trim();
+    }
+    out.push(row);
+  }
+  return out;
+
+  function readCsvLine(line) {
+    const res = [];
+    let cur = "";
+    let inQ = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+
+      if (ch === '"') {
+        if (inQ && line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQ = !inQ;
+        }
+        continue;
+      }
+
+      if (ch === "," && !inQ) {
+        res.push(cur);
+        cur = "";
+        continue;
+      }
+
+      cur += ch;
+    }
+    res.push(cur);
+    return res;
+  }
+}
+
+function normalizeRow(row, idx) {
+  const obj = row && typeof row === "object" ? row : {};
+  const get = (...keys) => {
+    for (const k of keys) {
+      if (k in obj && obj[k] != null) return obj[k];
+      const lk = String(k).toLowerCase();
+      for (const key of Object.keys(obj)) {
+        if (String(key).toLowerCase() === lk) return obj[key];
+      }
+    }
+    return "";
+  };
+
+  // TSV jwolle1 format note:
+  // answer = clue text; question = correct response
+  const clue = String(get("clue", "answer", "question_text", "clue_text") || "").trim();
+  const response = String(get("response", "question", "correct_response", "response_text") || "").trim();
+
+  const roundRaw = String(get("round", "j_round", "game_round") || "").trim();
+  const category = String(get("category", "category_name") || "").trim();
+
+  const valueRaw = String(get("value", "clue_value", "dollar_value") || "").trim();
+  const airDate = String(get("air_date", "date", "airDate") || "").trim();
+
+  const idRaw = get("id", "clue_id", "guid") || "";
+  const id = String(idRaw || `${idx + 1}_${hashTiny(category + clue + response)}`).trim();
+
+  return {
+    id,
+    round: normalizeRound(roundRaw),
+    category,
+    value: normalizeValue(valueRaw),
+    clue,
+    response,
+    air_date: airDate,
+  };
+}
+
+function normalizeRound(r) {
+  const s = String(r || "").trim().toLowerCase();
+  if (!s) return "";
+  if (s === "1" || s === "j" || s === "jeopardy" || s === "jeopardy!" || s === "round 1") return "J";
+  if (s === "2" || s === "dj" || s.includes("double")) return "DJ";
+  if (s.includes("final")) return "FJ";
+  // Some dumps use "Jeopardy Round" etc.
+  if (s.includes("jeopardy") && !s.includes("double")) return "J";
+  if (s.includes("double")) return "DJ";
+  return s.toUpperCase();
+}
+
+function normalizeValue(v) {
+  const s = String(v || "").trim();
+  if (!s) return 0;
+
+  // handle "200", "$200", "200.0", "200 " etc.
+  const cleaned = s.replace(/[$,]/g, "").trim();
+  const num = Number(cleaned);
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(num);
+}
+
+function isValidR1Clue(c) {
+  if (!c || typeof c !== "object") return false;
+  if (normalizeRound(c.round) !== "J") return false;
+  if (!c.category || !String(c.category).trim()) return false;
+  if (!VALUES_R1.includes(Number(c.value))) return false;
+  if (!c.clue || !String(c.clue).trim()) return false;
+  if (!c.response || !String(c.response).trim()) return false;
+  return true;
+}
+
+function hashTiny(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16).slice(0, 8);
+}
+
+// ------------------------ Board generation ------------------------
+
+function renderBoardShell() {
+  els.boardWrap.innerHTML = `
+    <div class="boardHint">
+      ${state.dataset.length
+        ? "Tap <b>New Board</b> to generate a game from your imported dataset."
+        : "No dataset loaded. Open <b>Settings</b> and import a TSV/CSV/JSON file. Only Round 1 (Jeopardy) clues with values $200–$1000 are used."}
+    </div>
+  `;
+}
+
+function tryNewBoard(force = false) {
+  try {
+    if (!state.dataset.length) {
+      setStatus("No dataset loaded. Import in Settings.", "warn");
+      renderBoardShell();
+      return;
+    }
+
+    const n = clamp(Number(els.categoryCount.value || 4), 3, 6);
+    const board = buildBoardFromDataset(state.dataset, n);
+
+    if (!board) {
+      setStatus("Not enough complete categories (need at least one clue for each $200–$1000). Import a larger dataset.", "error");
+      renderBoardShell();
+      return;
+    }
+
+    state.board = board;
+    state.score = force ? 0 : state.score;
+    state.outcomes = force ? [] : state.outcomes;
+
+    renderScore();
+    setStatus("Board ready. Tap a dollar value to play.", "info");
+    goBoard();
+    renderBoard();
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to generate board. Try a different dataset.", "error");
+    renderBoardShell();
+  }
+}
+
+function buildBoardFromDataset(dataset, categoryCount) {
+  const byCat = new Map();
+
+  for (const clue of dataset) {
+    const catRaw = String(clue.category || "").trim();
+    if (!catRaw) continue;
+    const catKey = catRaw.toLowerCase().replace(/\s+/g, " ").trim();
+    if (!byCat.has(catKey)) {
+      byCat.set(catKey, {
+        key: catKey,
+        display: catRaw,
+        buckets: new Map(), // value -> array
+      });
+    }
+    const entry = byCat.get(catKey);
+    if (!entry.buckets.has(clue.value)) entry.buckets.set(clue.value, []);
+    entry.buckets.get(clue.value).push(clue);
+  }
+
+  const complete = [];
+  for (const entry of byCat.values()) {
+    const ok = VALUES_R1.every(v => (entry.buckets.get(v) || []).length > 0);
+    if (ok) complete.push(entry);
+  }
+
+  if (complete.length < categoryCount) return null;
+
+  const picked = sampleN(complete, categoryCount);
+  const categories = picked.map(p => ({ key: p.key, name: p.display }));
+
+  const grid = new Map(); // cellKey -> clue
+  const used = new Set();
+
+  for (let ci = 0; ci < picked.length; ci++) {
+    const p = picked[ci];
+    for (const v of VALUES_R1) {
+      const bucket = p.buckets.get(v) || [];
+      const clue = bucket[Math.floor(Math.random() * bucket.length)];
+      const cellKey = makeCellKey(p.key, v);
+      grid.set(cellKey, { ...clue, _catKey: p.key, _catName: p.display, _value: v });
+    }
+  }
+
+  return { categories, grid, used };
+}
+
+function makeCellKey(catKey, value) {
+  return `${catKey}::${value}`;
+}
+
+function sampleN(arr, n) {
+  const copy = [...arr];
+  shuffle(copy);
+  return copy.slice(0, n);
+}
+
+function shuffle(a) {
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [a[i], a[j]] = [a[j], a[i]];
@@ -502,576 +762,760 @@ function shuffle(arr) {
   return a;
 }
 
-function buildBoard() {
-  const nCats = clampNum(parseInt(ui.categoriesCount.value, 10), 3, 6, 4);
-  if (!state.bank.length) throw new Error("No dataset loaded. Import a TSV in Settings.");
-
-  const eligible = state.bank.filter(eligibleForBoard);
-  const grouped = groupByCategoryAndValue(eligible);
-
-  const completeCats = [];
-  for (const [cat, m] of grouped.entries()) {
-    const ok = VALUES.every((v) => (m.get(v) || []).length > 0);
-    if (ok) completeCats.push(cat);
-  }
-
-  if (completeCats.length < nCats) {
-    throw new Error(`Not enough complete categories for a ${nCats}-category board. Found ${completeCats.length}.`);
-  }
-
-  const pickedCats = shuffle(completeCats).slice(0, nCats);
-
-  state.boardCats = pickedCats.map((catName) => {
-    const valueMap = grouped.get(catName);
-    const cluesByValue = new Map();
-    for (const v of VALUES) {
-      const options = valueMap.get(v) || [];
-      const clue = options[Math.floor(Math.random() * options.length)];
-      cluesByValue.set(v, clue);
-    }
-    return { name: catName, cluesByValue, usedValues: new Set() };
-  });
-
-  state.usedCount = 0;
-  state.totalCells = nCats * VALUES.length;
-  state.outcomes = [];
-  state.active = null;
-  setScore(0);
-
-  renderBoard();
-  showView(ui.boardView);
-  setStatus("Board ready. Tap a dollar amount.");
-}
-
-function isBoardExhausted() {
-  if (!state.boardCats.length) return false;
-  return state.usedCount >= state.totalCells;
-}
-
 function renderBoard() {
-  const n = state.boardCats.length;
-  const grid = document.createElement("div");
-  grid.className = "boardGrid";
-  grid.style.gridTemplateColumns = `repeat(${n}, minmax(0, 1fr))`;
-
-  for (let c = 0; c < n; c++) {
-    const h = document.createElement("div");
-    h.className = "boardHead";
-    h.textContent = state.boardCats[c].name;
-    grid.appendChild(h);
+  if (!state.board) {
+    renderBoardShell();
+    return;
   }
 
-  for (const value of VALUES) {
-    for (let c = 0; c < n; c++) {
-      const cell = document.createElement("div");
-      const used = state.boardCats[c].usedValues.has(value);
-      cell.className = `boardCell ${used ? "used" : ""}`;
+  const cols = state.board.categories.length;
+  const colStyle = `grid-template-columns: repeat(${cols}, 1fr);`;
 
-      const btn = document.createElement("button");
-      btn.className = "boardCellBtn";
-      btn.textContent = `$${value}`;
-      btn.disabled = used;
-      btn.addEventListener("click", () => openClue(c, value));
-      cell.appendChild(btn);
-
-      grid.appendChild(cell);
-    }
-  }
-
-  ui.board.innerHTML = "";
-  ui.board.appendChild(grid);
-
-  if (state.boardCats.length) {
-    const disabled = ui.board.querySelectorAll("button.boardCellBtn:disabled").length;
-    if (disabled === state.totalCells) {
-      state.usedCount = state.totalCells;
-      endBoard();
-    }
-  }
-}
-
-function markCellUsed(catIndex, value) {
-  const cat = state.boardCats[catIndex];
-  if (!cat.usedValues.has(value)) {
-    cat.usedValues.add(value);
-    state.usedCount += 1;
-  }
-  renderBoard();
-  if (isBoardExhausted()) setTimeout(endBoard, 0);
-}
-
-/* ---------------- Clue flow ---------------- */
-
-function cancelRAF() {
-  if (state.rafId) {
-    cancelAnimationFrame(state.rafId);
-    state.rafId = null;
-  }
-}
-
-function resetClueUI() {
-  cancelRAF();
-  ui.progressFill.style.width = "0%";
-  ui.progressWrap.classList.add("hidden");
-  ui.btnBuzz.classList.add("hidden");
-  ui.blankScreen.classList.add("hidden");
-  ui.resultActions.classList.add("hidden");
-  ui.noBuzzActions.classList.add("hidden");
-  ui.btnBuzz.disabled = false;
-  ui.btnBuzz.onclick = null;
-}
-
-function openClue(catIndex, value) {
-  const cat = state.boardCats[catIndex];
-  const clueObj = cat.cluesByValue.get(value);
-
-  state.active = { catIndex, value, clueObj };
-
-  // Prime audio on a user gesture so iOS will allow playback later
-  const { enabled, apiKey, voiceId } = getElevenSettings();
-  if (enabled && apiKey && voiceId) primeTtsAudioOnce();
-
-  ui.clueCategory.textContent = cat.name;
-  ui.clueValue.textContent = `$${value}`;
-  ui.clueText.textContent = clueObj.clue;
-
-  resetClueUI();
-  showView(ui.clueView);
-
-  runClueFlow(clueObj).catch((err) => {
-    ui.clueText.textContent = `Error: ${String(err)}`;
-    ui.noBuzzActions.classList.remove("hidden");
-  });
-}
-
-async function runClueFlow(clueObj) {
-  await speakAsync(clueObj.clue);
-  startBuzzWindow();
-}
-
-function startBuzzWindow() {
-  resetClueUI();
-
-  const ms = state.buzzWindowMs;
-  const start = performance.now();
-  state.buzzDeadline = start + ms;
-
-  ui.progressWrap.classList.remove("hidden");
-  ui.btnBuzz.classList.remove("hidden");
-  ui.progressLabel.textContent = `Buzz window: ${(ms / 1000).toFixed(1)}s`;
-
-  let buzzed = false;
-
-  const onBuzz = () => {
-    if (buzzed) return;
-    buzzed = true;
-    ui.btnBuzz.disabled = true;
-    cancelRAF();
-    ui.progressFill.style.width = "100%";
-    handleBuzz();
-  };
-
-  ui.btnBuzz.disabled = false;
-  ui.btnBuzz.onclick = onBuzz;
-
-  const tick = () => {
-    const now = performance.now();
-    const left = Math.max(0, state.buzzDeadline - now);
-    const pct = Math.min(1, (now - start) / ms);
-    ui.progressFill.style.width = `${Math.round(pct * 100)}%`;
-
-    if (left <= 0) {
-      ui.btnBuzz.disabled = true;
-      ui.btnBuzz.classList.add("hidden");
-      revealNoBuzz();
-      return;
-    }
-    state.rafId = requestAnimationFrame(tick);
-  };
-
-  state.rafId = requestAnimationFrame(tick);
-}
-
-function revealNoBuzz() {
-  const { catIndex, value, clueObj } = state.active;
-
-  ui.clueText.textContent = clueObj.response;
-
-  state.outcomes.push({
-    status: "skipped",
-    cat: state.boardCats[catIndex].name,
-    value,
-    clue: clueObj.clue,
-    response: clueObj.response,
-  });
-
-  ui.noBuzzActions.classList.remove("hidden");
-  ui.btnBackToBoard.onclick = () => {
-    markCellUsed(catIndex, value);
-    if (!isBoardExhausted()) {
-      showView(ui.boardView);
-      setStatus("Tap the next dollar amount.");
-    }
-  };
-}
-
-function handleBuzz() {
-  const { clueObj } = state.active;
-
-  ui.blankScreen.classList.remove("hidden");
-  ui.progressWrap.classList.add("hidden");
-  ui.btnBuzz.classList.add("hidden");
-
-  window.setTimeout(() => {
-    ui.blankScreen.classList.add("hidden");
-    ui.clueText.textContent = clueObj.response;
-    ui.resultActions.classList.remove("hidden");
-
-    ui.btnGotIt.onclick = () => finalizeBuzzResult(true);
-    ui.btnMissed.onclick = () => finalizeBuzzResult(false);
-  }, state.blankMs);
-}
-
-function finalizeBuzzResult(gotIt) {
-  const { catIndex, value, clueObj } = state.active;
-
-  if (gotIt) setScore(state.score + value);
-  else setScore(state.score - value);
-
-  state.outcomes.push({
-    status: gotIt ? "correct" : "wrong",
-    cat: state.boardCats[catIndex].name,
-    value,
-    clue: clueObj.clue,
-    response: clueObj.response,
-  });
-
-  markCellUsed(catIndex, value);
-
-  if (!isBoardExhausted()) {
-    showView(ui.boardView);
-    setStatus("Tap the next dollar amount.");
-  }
-}
-
-/* ---------------- Results + learning cards ---------------- */
-
-function endBoard() {
-  cancelRAF();
-  try {
-    window.speechSynthesis?.cancel?.();
-  } catch {}
-  showView(ui.resultsView);
-  renderResults();
-  setStatus("Round complete.");
-}
-
-function pct(n, d) {
-  return d ? `${Math.round((n / d) * 100)}%` : "0%";
-}
-
-function renderResults() {
-  const total = state.totalCells;
-  const buzzed = state.outcomes.filter((o) => o.status === "correct" || o.status === "wrong").length;
-  const correct = state.outcomes.filter((o) => o.status === "correct").length;
-  const wrong = state.outcomes.filter((o) => o.status === "wrong").length;
-  const skipped = state.outcomes.filter((o) => o.status === "skipped").length;
-
-  const byCat = new Map();
-  for (const o of state.outcomes) {
-    if (!byCat.has(o.cat)) byCat.set(o.cat, { correct: 0, wrong: 0, skipped: 0, total: 0 });
-    const s = byCat.get(o.cat);
-    s.total += 1;
-    if (o.status === "correct") s.correct += 1;
-    if (o.status === "wrong") s.wrong += 1;
-    if (o.status === "skipped") s.skipped += 1;
-  }
-
-  const catCards = [...byCat.entries()]
-    .map(([cat, s]) => {
-      const attempted = s.correct + s.wrong;
-      const acc = attempted ? s.correct / attempted : 0;
-      return { cat, ...s, attempted, acc };
-    })
-    .sort((a, b) => a.acc - b.acc);
-
-  ui.resultsSummary.innerHTML = `
-    <div class="sumGrid">
-      <div class="sumCard">
-        <div class="sumTitle">Score</div>
-        <div class="sumMeta">${state.score}</div>
-      </div>
-      <div class="sumCard">
-        <div class="sumTitle">Attempted (buzzed)</div>
-        <div class="sumMeta">${buzzed}/${total} • Accuracy ${pct(correct, buzzed)}</div>
-      </div>
-      <div class="sumCard">
-        <div class="sumTitle">Correct / Wrong</div>
-        <div class="sumMeta">${correct} correct • ${wrong} wrong</div>
-      </div>
-      <div class="sumCard">
-        <div class="sumTitle">Skipped</div>
-        <div class="sumMeta">${skipped} revealed, no buzz</div>
-      </div>
-      ${catCards
-        .slice(0, 8)
-        .map(
-          (c) => `
-        <div class="sumCard">
-          <div class="sumTitle">${escapeHtml(c.cat)}</div>
-          <div class="sumMeta">
-            Accuracy ${pct(c.correct, c.attempted)} • Attempted ${c.attempted} • Skipped ${c.skipped}
-          </div>
-        </div>
-      `
-        )
-        .join("")}
+  const headRow = `
+    <div class="boardRow boardHead" style="${colStyle}">
+      ${state.board.categories.map(c => `<div class="boardCell">${escapeHtml(c.name)}</div>`).join("")}
     </div>
   `;
 
-  const review = state.outcomes.filter((o) => o.status === "wrong" || o.status === "skipped");
-  ui.feed.innerHTML = "";
-  for (const item of review) ui.feed.appendChild(renderReviewCard(item));
-
-  if (!review.length) {
-    const div = document.createElement("div");
-    div.className = "feedCard";
-    div.innerHTML = `
-      <div class="feedCardTitle">No missed or skipped clues</div>
-      <div class="feedBody">Nothing queued for review this round.</div>
+  const rows = VALUES_R1.map(v => {
+    return `
+      <div class="boardRow" style="${colStyle}">
+        ${state.board.categories.map(c => {
+          const key = makeCellKey(c.key, v);
+          const used = state.board.used.has(key);
+          const classes = `boardCell boardMoney${used ? " boardMoney--used" : ""}`;
+          const label = `$${v}`;
+          return `
+            <div class="${classes}" role="button" tabindex="0"
+              data-cell="${escapeAttr(key)}"
+              aria-disabled="${used ? "true" : "false"}">
+              ${label}
+            </div>
+          `;
+        }).join("")}
+      </div>
     `;
-    ui.feed.appendChild(div);
-  }
+  }).join("");
+
+  els.boardWrap.innerHTML = `<div class="board">${headRow}${rows}</div>`;
+
+  // Attach handlers
+  els.boardWrap.querySelectorAll(".boardMoney").forEach((cell) => {
+    const key = cell.getAttribute("data-cell") || "";
+    const isUsed = cell.classList.contains("boardMoney--used");
+
+    const handler = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (isUsed) return;
+      openClueByCellKey(key);
+    };
+
+    cell.addEventListener("click", handler);
+    cell.addEventListener("touchend", handler, { passive: false });
+    cell.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") handler(e);
+    });
+  });
 }
-
-function renderReviewCard(item) {
-  const div = document.createElement("div");
-  div.className = "feedCard";
-
-  const statusLabel = item.status === "wrong" ? "MISSED" : "SKIPPED";
-  const query = encodeURIComponent(`${item.response} ${item.cat}`);
-  const wiki = `https://en.wikipedia.org/wiki/Special:Search?search=${query}`;
-  const yt = `https://www.youtube.com/results?search_query=${query}`;
-
-  div.innerHTML = `
-    <div class="feedCardTitle">${escapeHtml(item.cat)} • $${item.value} • ${statusLabel}</div>
-    <div class="feedCardSub">Clue → Correct response</div>
-    <div class="feedBody">
-      <div><strong>Clue:</strong> ${escapeHtml(item.clue)}</div>
-      <div style="margin-top:8px;"><strong>Correct:</strong> ${escapeHtml(item.response)}</div>
-      <div style="margin-top:10px;">${escapeHtml(buildExplanation(item))}</div>
-      <div style="margin-top:10px;"><strong>Drill:</strong> Say the response first, then justify it in one sentence. Repeat 3 times.</div>
-    </div>
-    <div class="feedLinks">
-      <a class="link" href="${wiki}" target="_blank" rel="noreferrer">Wikipedia</a>
-      <a class="link" href="${yt}" target="_blank" rel="noreferrer">YouTube</a>
-    </div>
-  `;
-  return div;
-}
-
-function buildExplanation(item) {
-  const resp = item.response.replace(/^(who|what)\s+is\s+/i, "").replace(/\?$/, "");
-  return `Anchor: ${resp}. Convert the clue into a single retrieval cue, then force 5 fast recalls using the correct response as the prompt.`;
-}
-
-/* ---------------- Escaping ---------------- */
 
 function escapeHtml(s) {
-  return String(s)
+  return String(s ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
-
-/* ---------------- Settings persistence ---------------- */
-
-function applySettingsFromUI() {
-  state.buzzWindowMs = Math.round(clampNum(ui.buzzWindowSec.value, 1, 15, 5) * 1000);
-  state.blankMs = Math.round(clampNum(ui.blankMs.value, 250, 5000, 2000));
-
-  localStorage.setItem("jt_buzz_window_sec", String(ui.buzzWindowSec.value || "5"));
-  localStorage.setItem("jt_blank_ms", String(ui.blankMs.value || "2000"));
-
-  if (ui.elevenTtsToggle) localStorage.setItem("jt_eleven_enabled", ui.elevenTtsToggle.checked ? "1" : "0");
-  if (ui.elevenApiKey) localStorage.setItem("jt_eleven_key", ui.elevenApiKey.value || "");
-  if (ui.elevenVoiceId) localStorage.setItem("jt_eleven_voice_id", ui.elevenVoiceId.value || "");
-  if (ui.elevenModelSelect) localStorage.setItem("jt_eleven_model", ui.elevenModelSelect.value || "eleven_multilingual_v2");
-  if (ui.elevenOutputFormat) localStorage.setItem("jt_eleven_output", ui.elevenOutputFormat.value || "mp3_44100_128");
+function escapeAttr(s) {
+  return escapeHtml(s).replaceAll("`", "&#096;");
 }
 
-function loadSettingsToUI() {
-  ui.buzzWindowSec.value = localStorage.getItem("jt_buzz_window_sec") || "5";
-  ui.blankMs.value = localStorage.getItem("jt_blank_ms") || "2000";
+// ------------------------ View routing ------------------------
 
-  if (ui.elevenTtsToggle) ui.elevenTtsToggle.checked = localStorage.getItem("jt_eleven_enabled") === "1";
-  if (ui.elevenApiKey) ui.elevenApiKey.value = localStorage.getItem("jt_eleven_key") || "";
-  if (ui.elevenVoiceId) ui.elevenVoiceId.value = localStorage.getItem("jt_eleven_voice_id") || "";
-  if (ui.elevenModelSelect) ui.elevenModelSelect.value = localStorage.getItem("jt_eleven_model") || "eleven_multilingual_v2";
-  if (ui.elevenOutputFormat) ui.elevenOutputFormat.value = localStorage.getItem("jt_eleven_output") || "mp3_44100_128";
+function showView(which) {
+  for (const v of [els.boardView, els.clueView, els.resultsView]) {
+    v.classList.remove("view--active");
+  }
+  which.classList.add("view--active");
 }
 
-/* ---------------- iOS-safe Settings modal ---------------- */
+function goBoard() {
+  stopAllAudioAndTimers();
+  showView(els.boardView);
+  renderScore();
 
-function openSettings() {
-  const d = ui.settingsModal;
-  if (!d) return;
+  // If board exhausted, transition
+  if (state.board && state.board.used.size >= state.board.categories.length * VALUES_R1.length) {
+    goResults();
+    return;
+  }
+  renderBoard();
+}
 
-  if (typeof d.showModal === "function") {
-    try {
-      if (!d.open) d.showModal();
-    } catch {
-      d.setAttribute("open", "");
+function goClue() {
+  showView(els.clueView);
+}
+
+function goResults() {
+  stopAllAudioAndTimers();
+  showView(els.resultsView);
+  renderResults();
+}
+
+// ------------------------ Clue flow ------------------------
+
+async function openClueByCellKey(cellKey) {
+  if (!state.board || !state.board.grid.has(cellKey)) {
+    setStatus("That clue is unavailable. Generate a new board.", "warn");
+    return;
+  }
+  if (state.board.used.has(cellKey)) return;
+
+  const clue = state.board.grid.get(cellKey);
+  const value = Number(clue.value || clue._value || 0) || 0;
+
+  state.current = {
+    cellKey,
+    category: clue._catName || clue.category || "",
+    catKey: clue._catKey || String(clue.category || "").toLowerCase(),
+    value,
+    clue: String(clue.clue || "").trim(),
+    response: String(clue.response || "").trim(),
+    air_date: clue.air_date || "",
+    id: clue.id || "",
+    phase: "init",
+    buzzed: false,
+    resolved: false,
+  };
+
+  // Prime audio on initial tap (iOS unlock)
+  await primeAudioOnce();
+
+  // Immediately consume the cell if user navigates back or leaves
+  markCellUsed(cellKey);
+
+  // Render clue UI
+  renderClueBase();
+
+  goClue();
+
+  // Speak clue text only, then start countdown
+  await startClueAudioThenCountdown();
+}
+
+function markCellUsed(cellKey) {
+  if (!state.board) return;
+  state.board.used.add(cellKey);
+}
+
+function renderClueBase() {
+  if (!state.current) return;
+
+  els.clueStage.classList.remove("clueStage--blank");
+  els.revealWrap.hidden = true;
+  els.resultButtons.hidden = true;
+  els.backOnlyButtons.hidden = true;
+
+  els.clueText.textContent = state.current.clue || "(No clue text)";
+  els.responseText.textContent = "";
+
+  els.progressFill.style.width = "0%";
+  els.progressLabel.textContent = `Buzz window: ${state.settings.buzzSeconds.toFixed(1)}s`;
+
+  els.buzzBtn.disabled = true; // enabled when countdown starts
+  els.progressWrap.style.opacity = "0.6";
+  els.progressWrap.setAttribute("aria-hidden", "false");
+  els.clueActions.style.opacity = "0.75";
+
+  els.clueMeta.textContent = `${state.current.category} • $${state.current.value}`;
+}
+
+async function startClueAudioThenCountdown() {
+  if (!state.current) return;
+
+  stopAllAudioAndTimers();
+
+  // Enable user feedback if Eleven isn't usable
+  const elevenEnabled = state.settings.useEleven && canUseElevenLabs();
+  const systemEnabled = state.settings.useSystem && !!window.speechSynthesis;
+
+  state.current.phase = "reading";
+  els.buzzBtn.disabled = true;
+  els.progressWrap.style.opacity = "0.6";
+  els.clueActions.style.opacity = "0.75";
+
+  try {
+    if (elevenEnabled) {
+      const ok = await speakWithElevenLabs(state.current.clue);
+      if (!ok && systemEnabled) {
+        setStatus("ElevenLabs TTS failed. Falling back to System Voice.", "warn");
+        await speakWithSystemVoice(state.current.clue);
+      } else if (!ok && !systemEnabled) {
+        setStatus("TTS failed (ElevenLabs) and System Voice is disabled.", "error");
+      }
+    } else if (systemEnabled) {
+      if (state.settings.useEleven && !canUseElevenLabs()) {
+        setStatus("ElevenLabs unavailable (missing key/voice). Using System Voice.", "warn");
+      }
+      await speakWithSystemVoice(state.current.clue);
+    } else {
+      setStatus("TTS is disabled. Enable a reader in Settings.", "warn");
     }
-  } else {
-    d.setAttribute("open", "");
+  } catch (err) {
+    console.error(err);
+    if (systemEnabled) {
+      setStatus("TTS failed. Using System Voice fallback.", "warn");
+      try { await speakWithSystemVoice(state.current.clue); } catch {}
+    } else {
+      setStatus("TTS failed.", "error");
+    }
+  }
+
+  // Only after speaking ends, start countdown
+  if (!state.current) return;
+  await startCountdown();
+}
+
+function canUseElevenLabs() {
+  const keyOk = typeof ELEVEN_API_KEY === "string" && ELEVEN_API_KEY && !ELEVEN_API_KEY.includes("PASTE_");
+  const voiceOk = (state.settings.elevenVoiceId || ELEVEN_VOICE_ID || "").trim() && !(state.settings.elevenVoiceId || ELEVEN_VOICE_ID).includes("PASTE_");
+  return keyOk && voiceOk;
+}
+
+async function primeAudioOnce() {
+  if (state.audioPrimed) return true;
+  try {
+    const a = els.audioPlayer;
+    if (!a) return false;
+
+    // Very short silent WAV (data URI). Play muted then pause to unlock playback on iOS.
+    const silentWav =
+      "data:audio/wav;base64," +
+      "UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
+
+    a.src = silentWav;
+    a.muted = true;
+    a.playsInline = true;
+
+    // Play attempt (must happen inside user gesture handler; we call this at board-cell tap).
+    const p = a.play();
+    if (p && typeof p.then === "function") {
+      await p;
+    }
+    a.pause();
+    a.currentTime = 0;
+    a.muted = false;
+
+    state.audioPrimed = true;
+    return true;
+  } catch (err) {
+    console.warn("Audio prime failed:", err);
+    state.audioPrimed = true; // avoid repeated attempts
+    return false;
   }
 }
 
-function closeSettings() {
-  const d = ui.settingsModal;
-  if (!d) return;
+async function speakWithElevenLabs(text) {
+  try {
+    const voiceId = (state.settings.elevenVoiceId || ELEVEN_VOICE_ID || "").trim();
+    const modelId = (state.settings.elevenModelId || ELEVEN_MODEL_ID || "").trim();
+    const outFmt = (state.settings.elevenOutputFmt || ELEVEN_OUTPUT_FORMAT || "").trim();
 
-  if (typeof d.close === "function") {
-    try {
-      d.close();
-    } catch {
-      d.removeAttribute("open");
+    if (!voiceId || !modelId || !outFmt) {
+      setStatus("ElevenLabs settings missing. Check Settings → Advanced.", "error");
+      return false;
     }
-  } else {
-    d.removeAttribute("open");
+
+    if (!canUseElevenLabs()) {
+      setStatus("ElevenLabs key/voice not set in app.js constants. Using fallback.", "warn");
+      return false;
+    }
+
+    const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=${encodeURIComponent(outFmt)}`;
+    const payload = {
+      text: String(text || ""),
+      model_id: modelId,
+      voice_settings: {
+        stability: 0.45,
+        similarity_boost: 0.75,
+        style: 0.2,
+        use_speaker_boost: true,
+      },
+    };
+
+    const controller = new AbortController();
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "xi-api-key": ELEVEN_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    if (!resp.ok) {
+      const body = await safeText(resp);
+      console.warn("ElevenLabs HTTP not ok:", resp.status, body);
+      setStatus(`ElevenLabs failed (HTTP ${resp.status}).`, "warn");
+      return false;
+    }
+
+    const blob = await resp.blob();
+    if (!blob || !blob.size) {
+      setStatus("ElevenLabs returned empty audio.", "warn");
+      return false;
+    }
+
+    const a = els.audioPlayer;
+    if (!a) return false;
+
+    const objUrl = URL.createObjectURL(blob);
+    a.src = objUrl;
+    a.playsInline = true;
+
+    const ended = new Promise((resolve) => {
+      const onEnd = () => {
+        cleanup();
+        resolve(true);
+      };
+      const onErr = () => {
+        cleanup();
+        resolve(false);
+      };
+      const cleanup = () => {
+        a.removeEventListener("ended", onEnd);
+        a.removeEventListener("error", onErr);
+        try { URL.revokeObjectURL(objUrl); } catch {}
+      };
+      a.addEventListener("ended", onEnd);
+      a.addEventListener("error", onErr);
+    });
+
+    // Attempt playback
+    const playPromise = a.play();
+    if (playPromise && typeof playPromise.catch === "function") {
+      await playPromise.catch((err) => {
+        console.warn("Audio play blocked:", err);
+      });
+    }
+
+    const ok = await ended;
+    if (!ok) setStatus("ElevenLabs playback failed.", "warn");
+    return ok;
+  } catch (err) {
+    console.warn("ElevenLabs TTS error:", err);
+    setStatus("ElevenLabs TTS failed.", "warn");
+    return false;
   }
 }
 
-/* ---------------- UI wiring ---------------- */
+function safeText(resp) {
+  try {
+    return resp.text();
+  } catch {
+    return Promise.resolve("");
+  }
+}
 
-ui.btnSettings.addEventListener("click", (e) => {
-  e.preventDefault();
-  openSettings();
-});
+async function speakWithSystemVoice(text) {
+  const synth = window.speechSynthesis;
+  if (!synth) throw new Error("SpeechSynthesis unavailable");
 
-const closeBtn = ui.settingsModal?.querySelector('button[value="close"]');
-if (closeBtn) {
-  closeBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    closeSettings();
+  stopSystemSpeech();
+
+  const utter = new SpeechSynthesisUtterance(String(text || ""));
+  state.speech.synthUtterance = utter;
+
+  const voiceURI = String(state.settings.systemVoiceURI || "");
+  const voices = synth.getVoices ? synth.getVoices() : [];
+  const chosen = voices.find(v => v.voiceURI === voiceURI) || null;
+  if (chosen) utter.voice = chosen;
+
+  utter.rate = 0.98;
+  utter.pitch = 1.0;
+  utter.volume = 1.0;
+
+  const done = new Promise((resolve) => {
+    let resolved = false;
+
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve(true);
+    };
+
+    const cleanup = () => {
+      utter.onend = null;
+      utter.onerror = null;
+      if (state.speech.speakingPollId) {
+        clearInterval(state.speech.speakingPollId);
+        state.speech.speakingPollId = null;
+      }
+    };
+
+    utter.onend = () => finish();
+    utter.onerror = () => finish();
+
+    // Fallback poll: iOS sometimes misses onend.
+    state.speech.speakingPollId = setInterval(() => {
+      try {
+        if (!synth.speaking && !synth.pending) finish();
+      } catch {
+        finish();
+      }
+    }, 200);
+  });
+
+  try {
+    synth.speak(utter);
+  } catch (err) {
+    console.warn("speak() failed:", err);
+    // Resolve quickly to not deadlock
+    stopSystemSpeech();
+    return;
+  }
+
+  await done;
+}
+
+function stopSystemSpeech() {
+  try {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    synth.cancel();
+  } catch {}
+  state.speech.synthUtterance = null;
+  if (state.speech.speakingPollId) {
+    clearInterval(state.speech.speakingPollId);
+    state.speech.speakingPollId = null;
+  }
+}
+
+function stopAllAudioAndTimers() {
+  stopCountdown();
+  stopSystemSpeech();
+  try {
+    const a = els.audioPlayer;
+    if (a) {
+      a.pause();
+      a.currentTime = 0;
+      // keep src for unlocked behavior
+    }
+  } catch {}
+}
+
+async function startCountdown() {
+  if (!state.current) return;
+
+  state.current.phase = "buzz";
+  els.buzzBtn.disabled = false;
+  els.progressWrap.style.opacity = "1";
+  els.clueActions.style.opacity = "1";
+  els.revealWrap.hidden = true;
+
+  const durationMs = Math.round(clamp(state.settings.buzzSeconds, 1, 15) * 1000);
+  state.countdown.durationMs = durationMs;
+  state.countdown.startT = now();
+  state.countdown.running = true;
+
+  els.progressFill.style.width = "0%";
+
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (!state.countdown.running) return resolve();
+      const t = now();
+      const elapsed = t - state.countdown.startT;
+      const p = clamp(elapsed / durationMs, 0, 1);
+      els.progressFill.style.width = `${(p * 100).toFixed(2)}%`;
+
+      if (p >= 1) {
+        state.countdown.running = false;
+        state.countdown.rafId = null;
+        onCountdownExpired();
+        return resolve();
+      }
+
+      state.countdown.rafId = requestAnimationFrame(tick);
+    };
+    state.countdown.rafId = requestAnimationFrame(tick);
   });
 }
 
-ui.settingsModal?.addEventListener("click", (e) => {
-  if (e.target === ui.settingsModal) closeSettings();
-});
-
-ui.voiceSelect.addEventListener("change", () => {
-  state.selectedVoiceURI = ui.voiceSelect.value || null;
-  localStorage.setItem("jt_voice_uri", ui.voiceSelect.value || "");
-});
-
-ui.buzzWindowSec.addEventListener("change", () => {
-  applySettingsFromUI();
-});
-ui.blankMs.addEventListener("change", () => {
-  applySettingsFromUI();
-});
-
-if (ui.elevenTtsToggle) ui.elevenTtsToggle.addEventListener("change", applySettingsFromUI);
-if (ui.elevenApiKey) ui.elevenApiKey.addEventListener("change", applySettingsFromUI);
-if (ui.elevenVoiceId) ui.elevenVoiceId.addEventListener("change", applySettingsFromUI);
-if (ui.elevenModelSelect) ui.elevenModelSelect.addEventListener("change", applySettingsFromUI);
-if (ui.elevenOutputFormat) ui.elevenOutputFormat.addEventListener("change", applySettingsFromUI);
-
-ui.btnNewBoard.addEventListener("click", () => {
-  applySettingsFromUI();
-  try {
-    buildBoard();
-  } catch (e) {
-    setStatus(String(e));
+function stopCountdown() {
+  state.countdown.running = false;
+  if (state.countdown.rafId) {
+    cancelAnimationFrame(state.countdown.rafId);
+    state.countdown.rafId = null;
   }
-});
-
-ui.btnNewBoard2.addEventListener("click", () => {
-  applySettingsFromUI();
-  try {
-    buildBoard();
-  } catch (e) {
-    setStatus(String(e));
-    showView(ui.boardView);
-  }
-});
-
-ui.btnBackToBoardTop.addEventListener("click", () => {
-  // Leaving the clue counts as skipped so it appears in review
-  if (state.active) {
-    const { catIndex, value, clueObj } = state.active;
-
-    state.outcomes.push({
-      status: "skipped",
-      cat: state.boardCats[catIndex].name,
-      value,
-      clue: clueObj.clue,
-      response: clueObj.response,
-    });
-
-    markCellUsed(catIndex, value);
-  }
-
-  if (!isBoardExhausted()) {
-    showView(ui.boardView);
-    setStatus("Tap the next dollar amount.");
-  }
-});
-
-ui.fileInput.addEventListener("change", async (e) => {
-  const f = e.target.files?.[0];
-  if (!f) return;
-
-  try {
-    const text = await f.text();
-    const name = (f.name || "").toLowerCase();
-    const looksTSV = name.endsWith(".tsv") || detectTSVByContent(text);
-
-    let cleaned;
-    if (name.endsWith(".json")) {
-      const arr = JSON.parse(text);
-      if (!Array.isArray(arr)) throw new Error("JSON must be an array");
-      cleaned = arr.map(normalizeClueObj).filter((x) => x.clue && x.response);
-    } else if (looksTSV) {
-      cleaned = parseJeopardyTSV(text);
-    } else {
-      cleaned = parseCSV(text);
-    }
-
-    if (!cleaned.length) throw new Error("Import produced 0 clues.");
-
-    state.bank = cleaned;
-    ui.importStatus.textContent = `Imported: ${cleaned.length} clues`;
-    setStatus("Dataset imported. Tap New Board.");
-  } catch (err) {
-    ui.importStatus.textContent = `Import failed: ${String(err)}`;
-    setStatus("Import failed.");
-  } finally {
-    ui.fileInput.value = "";
-  }
-});
-
-/* ---------------- Init ---------------- */
-
-function init() {
-  setScore(0);
-
-  loadSettingsToUI();
-  applySettingsFromUI();
-
-  if ("speechSynthesis" in window) {
-    window.speechSynthesis.onvoiceschanged = loadVoices;
-  }
-  loadVoices();
-
-  setStatus("Import a TSV in Settings, then tap New Board.");
-  ui.importStatus.textContent = "No import yet.";
-  showView(ui.boardView);
 }
 
-init();
+function onBuzz() {
+  if (!state.current) return;
+  if (state.current.phase !== "buzz") return;
+
+  state.current.buzzed = true;
+  stopCountdown();
+
+  // Disable buzz immediately
+  els.buzzBtn.disabled = true;
+  els.progressWrap.style.opacity = "0.6";
+  els.clueActions.style.opacity = "0.75";
+
+  // Blank screen phase
+  const blankMs = clamp(Number(state.settings.blankMs || 2000), 250, 5000);
+  state.current.phase = "blank";
+  els.clueStage.classList.add("clueStage--blank");
+
+  setTimeout(() => {
+    if (!state.current) return;
+    els.clueStage.classList.remove("clueStage--blank");
+    revealResponse({ withScoringButtons: true });
+  }, blankMs);
+}
+
+function onCountdownExpired() {
+  if (!state.current) return;
+  if (state.current.phase !== "buzz") return;
+
+  state.current.phase = "timeout";
+  els.buzzBtn.disabled = true;
+  revealResponse({ withScoringButtons: false });
+}
+
+function revealResponse({ withScoringButtons }) {
+  if (!state.current) return;
+
+  els.revealWrap.hidden = false;
+  els.responseText.textContent = state.current.response || "(No response)";
+
+  if (withScoringButtons) {
+    els.resultButtons.hidden = false;
+    els.backOnlyButtons.hidden = true;
+  } else {
+    els.resultButtons.hidden = true;
+    els.backOnlyButtons.hidden = false;
+  }
+}
+
+function finalizeClue(status) {
+  if (!state.current) return;
+
+  // If leaving before buzzing or after timeout without scoring, treat as skipped (no score change).
+  const normalized =
+    status === "correct" ? "correct" :
+    status === "wrong" ? "wrong" :
+    "skipped";
+
+  const entry = {
+    id: state.current.id,
+    category: state.current.category,
+    value: state.current.value,
+    clue: state.current.clue,
+    response: state.current.response,
+    air_date: state.current.air_date,
+    status: normalized,
+    attempted: normalized === "correct" || normalized === "wrong",
+    ts: Date.now(),
+  };
+
+  state.outcomes.push(entry);
+  state.current = null;
+
+  // Exhaustion check
+  if (state.board && state.board.used.size >= state.board.categories.length * VALUES_R1.length) {
+    goResults();
+  }
+}
+
+// ------------------------ Results ------------------------
+
+function renderResults() {
+  const score = state.score;
+
+  const correct = state.outcomes.filter(o => o.status === "correct").length;
+  const wrong = state.outcomes.filter(o => o.status === "wrong").length;
+  const skipped = state.outcomes.filter(o => o.status === "skipped").length;
+  const buzzed = correct + wrong;
+  const accuracy = buzzed > 0 ? (correct / buzzed) : 0;
+
+  els.resultsSummary.innerHTML = `
+    ${statCard("Final score", `$${score}`)}
+    ${statCard("Buzzed", `${buzzed}`)}
+    ${statCard("Accuracy", `${Math.round(accuracy * 100)}%`)}
+    ${statCard("Skipped", `${skipped}`)}
+  `;
+
+  renderCategorySummary();
+  renderReviewFeed();
+
+  if (!state.dataset.length) {
+    setStatus("No dataset loaded. Import in Settings.", "warn");
+  } else {
+    setStatus("Results ready. Tap New Board to play again.", "info");
+  }
+}
+
+function statCard(label, value) {
+  return `
+    <div class="stat">
+      <div class="stat__label">${escapeHtml(label)}</div>
+      <div class="stat__value">${escapeHtml(value)}</div>
+    </div>
+  `;
+}
+
+function renderCategorySummary() {
+  // Use only categories from current board if present; otherwise compute from outcomes.
+  const boardCats = state.board?.categories?.map(c => c.name) || [];
+  const inScope = boardCats.length ? new Set(boardCats.map(n => n.toLowerCase())) : null;
+
+  const byCat = new Map();
+  for (const o of state.outcomes) {
+    const cat = o.category || "(Unknown)";
+    if (inScope && !inScope.has(cat.toLowerCase())) continue;
+
+    if (!byCat.has(cat)) byCat.set(cat, { cat, correct: 0, wrong: 0, skipped: 0 });
+    const agg = byCat.get(cat);
+    if (o.status === "correct") agg.correct++;
+    else if (o.status === "wrong") agg.wrong++;
+    else agg.skipped++;
+  }
+
+  const rows = [...byCat.values()].map(v => {
+    const attempted = v.correct + v.wrong;
+    const acc = attempted ? (v.correct / attempted) : 0;
+    return { ...v, attempted, acc };
+  });
+
+  rows.sort((a, b) => (b.attempted - a.attempted) || (b.acc - a.acc) || a.cat.localeCompare(b.cat));
+
+  const top = rows.slice(0, 8);
+
+  if (!top.length) {
+    els.categorySummary.innerHTML = `<div class="boardHint">No category stats yet.</div>`;
+    return;
+  }
+
+  els.categorySummary.innerHTML = top.map(r => {
+    const accPct = r.attempted ? `${Math.round(r.acc * 100)}%` : "—";
+    return `
+      <div class="catRow">
+        <div class="catName">${escapeHtml(r.cat)}</div>
+        <div class="catStats">
+          attempted ${r.attempted} • skipped ${r.skipped} • acc ${accPct}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderReviewFeed() {
+  const items = state.outcomes.filter(o => o.status === "wrong" || o.status === "skipped");
+  if (!items.length) {
+    els.reviewFeed.innerHTML = `<div class="boardHint">No missed or skipped clues to review.</div>`;
+    return;
+  }
+
+  els.reviewFeed.innerHTML = items.map(o => {
+    const badge = o.status === "wrong"
+      ? `<span class="badge badge--bad">Missed</span>`
+      : `<span class="badge badge--skip">Skipped</span>`;
+
+    const query = `${o.response} ${o.category}`.trim();
+    const wiki = `https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(query)}`;
+    const yt = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+
+    const blurb = buildLearningBlurb(o);
+
+    return `
+      <div class="card">
+        <div class="cardTop">
+          <div class="cardMeta">
+            <div><b>${escapeHtml(o.category)}</b> • $${escapeHtml(o.value)}</div>
+            <div>${o.air_date ? `Air date: ${escapeHtml(o.air_date)}` : ""}</div>
+          </div>
+          ${badge}
+        </div>
+
+        <div class="cardQ">${escapeHtml(o.clue)}</div>
+
+        <div class="cardA">Answer: ${escapeHtml(o.response)}</div>
+
+        <div class="cardBlurb">${escapeHtml(blurb)}</div>
+
+        <div class="cardLinks">
+          <a href="${escapeAttr(wiki)}" target="_blank" rel="noopener noreferrer">Wikipedia</a>
+          <a href="${escapeAttr(yt)}" target="_blank" rel="noopener noreferrer">YouTube</a>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function buildLearningBlurb(o) {
+  const resp = String(o.response || "").trim();
+  const cat = String(o.category || "").trim();
+
+  const keyWords = pickKeywords(resp, 3);
+  const cue = keyWords.length ? `Cue: ${keyWords.join(" • ")}` : `Cue: ${cat}`;
+  const anchor = `Anchor: ${resp}.`;
+  const retrieval = `Retrieval cue: link "${resp}" to "${cat}" and the first 3–5 words of the clue. ${cue}.`;
+  const drill = `Drill: write the answer once, then recall it 3 times spaced over 10 minutes; next, say it aloud in a full sentence (“${resp} is …”).`;
+  return `${anchor} ${retrieval}\n\n${drill}`;
+}
+
+function pickKeywords(text, max = 3) {
+  const s = String(text || "").toLowerCase();
+  const words = s
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter(w => w.length >= 5)
+    .filter(w => !["which","there","their","about","these","those","where","after","before","would","could","whose","often"].includes(w));
+
+  const unique = [];
+  for (const w of words) {
+    if (!unique.includes(w)) unique.push(w);
+    if (unique.length >= max) break;
+  }
+  return unique.map(w => w[0].toUpperCase() + w.slice(1));
+}
+
+// ------------------------ Helpers ------------------------
+
+function renderBoardTopSafety() {
+  // If board exists but has no DOM, rerender
+  if (state.board) renderBoard();
+  else renderBoardShell();
+}
+
+function setSafeProgressWidth(p) {
+  const pct = clamp(p, 0, 1) * 100;
+  els.progressFill.style.width = `${pct.toFixed(2)}%`;
+}
+
+function stopEverythingAndResetClueUI() {
+  stopAllAudioAndTimers();
+  els.clueStage.classList.remove("clueStage--blank");
+  els.revealWrap.hidden = true;
+  els.resultButtons.hidden = true;
+  els.backOnlyButtons.hidden = true;
+  els.buzzBtn.disabled = true;
+  setSafeProgressWidth(0);
+}
+
+function renderBoardTopIfNeeded() {
+  renderScore();
+  renderBoardTopSafety();
+}
+
+// Prevent dead ends if user uses browser navigation or unexpected state
+window.addEventListener("pageshow", () => {
+  try {
+    renderScore();
+    if (els.boardView.classList.contains("view--active")) renderBoardTopSafety();
+  } catch {}
+});
