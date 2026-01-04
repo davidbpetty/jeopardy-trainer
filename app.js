@@ -1,7 +1,7 @@
 // Jeopardy Trainer — static, iOS-friendly, no frameworks, ES module.
 
-const ELEVEN_API_KEY = "PASTE_KEY_HERE";
-const ELEVEN_VOICE_ID = "PASTE_VOICE_ID_HERE";
+const ELEVEN_API_KEY = "sk_67b1ce3047273e14505b4bbdd144bd61a2ad52417a796b0b";
+const ELEVEN_VOICE_ID = "NFG5qt843uXKj4pFvR7C";
 const ELEVEN_MODEL_ID = "eleven_multilingual_v2";
 const ELEVEN_OUTPUT_FORMAT = "mp3_44100_128";
 
