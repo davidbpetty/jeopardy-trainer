@@ -783,8 +783,14 @@ ui.fileInput.addEventListener("change", async (e) => {
   const text = await f.text();
 
   try {
+    const name = (f.name || "").toLowerCase();
+
+    const firstLine = text.split(/\r?\n/, 1)[0] || "";
+    const looksLikeTSV =
+      firstLine.includes("\t") &&
+      (firstLine.includes("clue_value") || firstLine.includes("air_date") || firstLine.includes("answer"));
+
     let cleaned;
-    const name = f.name.toLowerCase();
 
     if (name.endsWith(".json")) {
       const bank = JSON.parse(text);
@@ -796,16 +802,21 @@ ui.fileInput.addEventListener("change", async (e) => {
         value: parseInt(x.value || 0, 10) || 0,
         clue: String(x.clue || ""),
         response: String(x.response || ""),
-        subject_tags: Array.isArray(x.subject_tags) ? x.subject_tags : String(x.subject_tags || "").split("|").map(s => s.trim()).filter(Boolean),
+        subject_tags: Array.isArray(x.subject_tags)
+          ? x.subject_tags
+          : String(x.subject_tags || "").split("|").map(s => s.trim()).filter(Boolean),
         source_url: String(x.source_url || ""),
       })).filter(x => x.clue && x.response);
-    } else if (name.endsWith(".tsv")) {
+    } else if (name.endsWith(".tsv") || looksLikeTSV) {
       cleaned = parseJeopardyTSV(text);
     } else {
       cleaned = parseCSV(text);
     }
 
-    if (cleaned.length < 10) throw new Error("Need at least 10 valid clues.");
+    if (!cleaned || cleaned.length < 10) {
+      throw new Error("Need at least 10 valid clues (clue + response).");
+    }
+
     state.bank = cleaned;
     ui.importStatus.textContent = `Imported: ${cleaned.length} clues`;
   } catch (err) {
