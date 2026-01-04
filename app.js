@@ -6,7 +6,11 @@
 // - Post-round: per-category stats + “TikTok-like” vertical learning feed
 // - Next round mixes weak-topic review with new categories
 //
-// NOTE: No real Jeopardy clues included. Import your own CSV/JSON.
+// Import support:
+// - CSV (your custom schema): id,round,category,value,clue,response,subject_tags,source_url
+// - TSV (jwolle1 seasons dataset schema): round, clue_value, daily_double_value, category, comments, answer, question, air_date, notes
+//
+// NOTE: No real Jeopardy clues included by default. Import your own datasets.
 
 const $ = (id) => document.getElementById(id);
 
@@ -99,7 +103,6 @@ const SAMPLE_BANK = [
     subject_tags: ["Science", "Chemistry"],
     source_url: ""
   },
-  // Add more original demo clues
   {
     id: "s6",
     round: "J",
@@ -156,7 +159,7 @@ function normalizeCategory(s) {
 }
 
 function speak(text) {
-  if (!ui.ttsToggle.checked) return;
+  if (!ui.ttsToggle?.checked) return;
   if (!("speechSynthesis" in window)) return;
 
   window.speechSynthesis.cancel();
@@ -173,6 +176,7 @@ function fmtPct(n) {
 
 function setPhase(phase) {
   state.phase = phase;
+
   if (phase === "idle") {
     ui.btnSkip.disabled = true;
     ui.btnCorrect.disabled = true;
@@ -209,10 +213,12 @@ function stopTimer() {
 function startTimer() {
   stopTimer();
   state.t0 = performance.now();
+
   const tick = () => {
     const elapsed = (performance.now() - state.t0) / 1000;
     const left = Math.max(0, state.timeLimitSec - elapsed);
     ui.timeLeft.textContent = left.toFixed(1);
+
     if (left <= 0 && state.phase === "showing") {
       // Time's up: reveal without buzz
       revealAnswer(false);
@@ -220,6 +226,7 @@ function startTimer() {
     }
     state.timerId = requestAnimationFrame(tick);
   };
+
   state.timerId = requestAnimationFrame(tick);
 }
 
@@ -236,6 +243,16 @@ function shuffle(arr) {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+function clampInt(n, lo, hi) {
+  if (Number.isNaN(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function clampNum(n, lo, hi) {
+  if (Number.isNaN(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
 }
 
 function pickRoundQueue() {
@@ -280,18 +297,10 @@ function setScore(n) {
   ui.score.textContent = String(n);
 }
 
-function clampInt(n, lo, hi) {
-  if (Number.isNaN(n)) return lo;
-  return Math.max(lo, Math.min(hi, n));
-}
-function clampNum(n, lo, hi) {
-  if (Number.isNaN(n)) return lo;
-  return Math.max(lo, Math.min(hi, n));
-}
-
 function showClue(i) {
   const clue = state.roundQueue[i];
   state.current = { ...clue, idx: i };
+
   ui.clueIndex.textContent = String(i + 1);
   ui.clueTotal.textContent = String(state.roundQueue.length);
   updateHeaderForClue(clue);
@@ -304,7 +313,7 @@ function showClue(i) {
   startTimer();
 }
 
-function revealAnswer(wasBuzzed) {
+function revealAnswer(_wasBuzzed) {
   stopTimer();
   setPhase("buzzed");
   ui.blankOverlay.classList.remove("hidden");
@@ -334,7 +343,6 @@ function markResult(isCorrect) {
 
   state.answeredThisRound += 1;
 
-  // Next clue or end
   const nextIdx = clue.idx + 1;
   if (nextIdx >= state.roundQueue.length) {
     endRound();
@@ -345,8 +353,8 @@ function markResult(isCorrect) {
 
 function skipClue() {
   stopTimer();
-  // treat as wrong for training signal? Here: neutral; it still counts as "seen" but not scored.
-  // If you want it Jeopardy-strict, call markResult(false) instead.
+
+  // Neutral skip (counts as seen, not scored). Switch to markResult(false) for strictness.
   const clue = state.current;
   const catKey = normalizeCategory(clue.category);
   const s = ensureCat(catKey, clue.subject_tags);
@@ -367,6 +375,9 @@ function endRound() {
   renderSummaryAndFeed();
   ui.gameView.classList.add("hidden");
   ui.learnView.classList.remove("hidden");
+
+  ui.btnStart.disabled = false;
+  ui.btnStart.textContent = "Start Round";
 }
 
 function categoryPerformanceRows() {
@@ -377,14 +388,12 @@ function categoryPerformanceRows() {
     return { cat, attempted, correct, wrong: v.wrong || 0, pct, tags: [...v.tags] };
   });
 
-  // Only include categories actually seen this round
   const filtered = rows.filter(r => r.attempted > 0);
   filtered.sort((a, b) => a.pct - b.pct); // weakest first
   return filtered;
 }
 
 function pickWeakTopics(rows) {
-  // pick up to 4 weak categories with enough sample size
   const candidates = rows.filter(r => r.attempted >= 2);
   const base = candidates.length ? candidates : rows;
   return base.slice(0, Math.min(4, base.length)).map(r => r.cat);
@@ -395,7 +404,6 @@ function renderSummaryAndFeed() {
   const weakCats = pickWeakTopics(rows);
   state.lastWeakTopics = weakCats;
 
-  // Summary cards
   const totalAttempted = rows.reduce((a, r) => a + r.attempted, 0);
   const totalCorrect = rows.reduce((a, r) => a + r.correct, 0);
   const overallPct = totalAttempted ? totalCorrect / totalAttempted : 0;
@@ -415,7 +423,6 @@ function renderSummaryAndFeed() {
     </div>
   `;
 
-  // Learning feed cards
   buildFeed(weakCats, rows).catch(err => {
     ui.feed.innerHTML = `<div class="cardSlide"><div class="slideTitle">Feed build failed</div><div class="slideBody">${escapeHtml(String(err))}</div></div>`;
   });
@@ -445,7 +452,6 @@ async function buildFeed(weakCats, rows) {
     }));
   }
 
-  // Add a “how to review” closing card
   ui.feed.appendChild(renderLessonCard({
     category: "Review Loop",
     subtitle: "How the next round is built",
@@ -497,11 +503,9 @@ function renderLessonCard({ category, subtitle, lesson }) {
 }
 
 function templateLesson(category, tags) {
-  // Simple deterministic micro-lesson generator.
-  // Swap this with AI if you enable it.
-  const base = {
+  return {
     title: `${category}: micro-review`,
-    body: `Goal: rebuild fast retrieval. Focus on 6 anchor facts, 3 common clue patterns, and 3 likely confusions.`,
+    body: "Goal: rebuild fast retrieval. Focus on 6 anchor facts, 3 common clue patterns, and 3 likely confusions.",
     keyPoints: [
       { h: "6 anchors", p: buildAnchors(category, tags).join(" • ") },
       { h: "Clue patterns", p: buildPatterns(category).join(" • ") },
@@ -510,10 +514,9 @@ function templateLesson(category, tags) {
     ],
     links: buildLinks(category),
   };
-  return base;
 }
 
-function buildAnchors(category, tags) {
+function buildAnchors(category, _tags) {
   const c = category.toLowerCase();
   if (c.includes("myth")) return [
     "Greek/Roman name pairs",
@@ -654,10 +657,10 @@ Constraints:
   return JSON.parse(txt);
 }
 
-/* Import */
-function parseCSV(text) {
-  // Minimal CSV parser: handles commas, quotes, newlines.
-  // Expected columns: id,round,category,value,clue,response,subject_tags,source_url
+/* ---------- Import parsers ---------- */
+
+function parseDelimited(text, delimiter) {
+  // CSV/TSV-style parser with quotes and escaped quotes ("")
   const rows = [];
   let i = 0, field = "", row = [], inQuotes = false;
 
@@ -666,24 +669,33 @@ function parseCSV(text) {
 
   while (i < text.length) {
     const c = text[i];
+
     if (inQuotes) {
       if (c === '"' && text[i + 1] === '"') { field += '"'; i += 2; continue; }
       if (c === '"') { inQuotes = false; i++; continue; }
       field += c; i++; continue;
     } else {
       if (c === '"') { inQuotes = true; i++; continue; }
-      if (c === ",") { pushField(); i++; continue; }
+      if (c === delimiter) { pushField(); i++; continue; }
       if (c === "\n") { pushField(); pushRow(); i++; continue; }
       if (c === "\r") { i++; continue; }
       field += c; i++; continue;
     }
   }
-  pushField(); pushRow();
 
+  pushField();
+  pushRow();
+  return rows;
+}
+
+function parseCSV(text) {
+  // Expected columns: id,round,category,value,clue,response,subject_tags,source_url
+  const rows = parseDelimited(text, ",");
   const header = (rows.shift() || []).map(h => h.trim());
   const idx = Object.fromEntries(header.map((h, j) => [h, j]));
 
   const get = (r, name) => r[idx[name]] ?? "";
+
   const out = rows
     .filter(r => r.some(x => String(x).trim().length))
     .map(r => ({
@@ -702,6 +714,47 @@ function parseCSV(text) {
   return out;
 }
 
+function parseJeopardyTSV(text) {
+  // jwolle1 dataset columns typically include:
+  // round, clue_value, daily_double_value, category, comments, answer, question, air_date, notes
+  const rows = parseDelimited(text, "\t");
+  const header = (rows.shift() || []).map(h => h.trim());
+  const idx = Object.fromEntries(header.map((h, j) => [h, j]));
+
+  const get = (r, name) => r[idx[name]] ?? "";
+
+  const roundMap = { "1": "J", "2": "DJ", "3": "FJ" };
+
+  return rows
+    .filter(r => r.some(x => String(x).trim().length))
+    .map((r, k) => {
+      const air = String(get(r, "air_date") || "").trim();
+      const roundRaw = String(get(r, "round") || "").trim();
+      const cat = String(get(r, "category") || "UNKNOWN").trim();
+
+      const clueValRaw = String(get(r, "clue_value") || "0");
+      const clueVal = parseInt(clueValRaw.replace(/[^0-9]/g, ""), 10) || 0;
+
+      // Dataset naming is historically "answer" = clue prompt, "question" = correct response
+      const cluePrompt = String(get(r, "answer") || "").trim();
+      const correctResp = String(get(r, "question") || "").trim();
+
+      return {
+        id: `${air || "nodate"}_${roundRaw || "r"}_${k}`,
+        round: roundMap[roundRaw] || roundRaw || "J",
+        category: cat,
+        value: clueVal,      // Final often 0; kept as 0
+        clue: cluePrompt,
+        response: correctResp,
+        subject_tags: [],
+        source_url: ""
+      };
+    })
+    .filter(x => x.clue && x.response); // allow value 0
+}
+
+/* ---------- Escaping helpers ---------- */
+
 function escapeHtml(s) {
   return String(s)
     .replaceAll("&", "&amp;")
@@ -710,11 +763,13 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
 function escapeAttr(s) {
   return String(s).replaceAll('"', "%22");
 }
 
-/* Events */
+/* ---------- Events ---------- */
+
 ui.btnSettings.addEventListener("click", () => ui.settingsModal.showModal());
 
 ui.btnLoadSample.addEventListener("click", () => {
@@ -728,27 +783,29 @@ ui.fileInput.addEventListener("change", async (e) => {
   const text = await f.text();
 
   try {
-    let bank;
-    if (f.name.toLowerCase().endsWith(".json")) {
-      bank = JSON.parse(text);
+    let cleaned;
+    const name = f.name.toLowerCase();
+
+    if (name.endsWith(".json")) {
+      const bank = JSON.parse(text);
       if (!Array.isArray(bank)) throw new Error("JSON must be an array");
+      cleaned = bank.map(x => ({
+        id: String(x.id || crypto.randomUUID()),
+        round: String(x.round || "J"),
+        category: String(x.category || "UNKNOWN"),
+        value: parseInt(x.value || 0, 10) || 0,
+        clue: String(x.clue || ""),
+        response: String(x.response || ""),
+        subject_tags: Array.isArray(x.subject_tags) ? x.subject_tags : String(x.subject_tags || "").split("|").map(s => s.trim()).filter(Boolean),
+        source_url: String(x.source_url || ""),
+      })).filter(x => x.clue && x.response);
+    } else if (name.endsWith(".tsv")) {
+      cleaned = parseJeopardyTSV(text);
     } else {
-      bank = parseCSV(text);
+      cleaned = parseCSV(text);
     }
 
-    // Validate shape
-    const cleaned = bank.map(x => ({
-      id: String(x.id || crypto.randomUUID()),
-      round: String(x.round || "J"),
-      category: String(x.category || "UNKNOWN"),
-      value: parseInt(x.value || 0, 10) || 0,
-      clue: String(x.clue || ""),
-      response: String(x.response || ""),
-      subject_tags: Array.isArray(x.subject_tags) ? x.subject_tags : String(x.subject_tags || "").split("|").map(s => s.trim()).filter(Boolean),
-      source_url: String(x.source_url || ""),
-    })).filter(x => x.clue && x.response && x.value > 0);
-
-    if (cleaned.length < 10) throw new Error("Need at least 10 valid clues (with value>0, clue, response).");
+    if (cleaned.length < 10) throw new Error("Need at least 10 valid clues.");
     state.bank = cleaned;
     ui.importStatus.textContent = `Imported: ${cleaned.length} clues`;
   } catch (err) {
@@ -761,19 +818,23 @@ ui.fileInput.addEventListener("change", async (e) => {
 ui.timeLimit.addEventListener("change", () => {
   state.timeLimitSec = parseFloat(ui.timeLimit.value) || 5;
 });
+
 ui.blankTime.addEventListener("change", () => {
   state.blankMs = parseInt(ui.blankTime.value, 10) || 2000;
 });
 
 ui.btnStart.addEventListener("click", () => startRound());
+
 ui.btnSkip.addEventListener("click", () => {
   if (state.phase !== "showing") return;
   skipClue();
 });
+
 ui.btnCorrect.addEventListener("click", () => {
   if (state.phase !== "revealed") return;
   markResult(true);
 });
+
 ui.btnWrong.addEventListener("click", () => {
   if (state.phase !== "revealed") return;
   markResult(false);
@@ -798,7 +859,6 @@ ui.btnNextRound.addEventListener("click", () => {
 });
 
 function startRound() {
-  // init per-round
   state.timeLimitSec = parseFloat(ui.timeLimit.value) || 5;
   state.blankMs = parseInt(ui.blankTime.value, 10) || 2000;
 
@@ -814,6 +874,8 @@ function startRound() {
 
   showClue(0);
 }
+
+/* ---------- Init ---------- */
 
 setPhase("idle");
 setScore(0);
