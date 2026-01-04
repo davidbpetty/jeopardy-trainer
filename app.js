@@ -7,9 +7,11 @@
    - Used clues removed from board
    - End => stats + missed/skipped review cards
    - Settings modal: iOS-safe <dialog> fallback (open attribute)
-   - Optional OpenAI TTS via user-entered key stored in localStorage
+   - Optional ElevenLabs TTS via user-entered key stored in localStorage
 
-   OpenAI TTS: POST https://api.openai.com/v1/audio/speech
+   ElevenLabs TTS:
+   POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128
+   Header: xi-api-key
 */
 
 const $ = (id) => document.getElementById(id);
@@ -58,10 +60,12 @@ const ui = {
   buzzWindowSec: $("buzzWindowSec"),
   blankMs: $("blankMs"),
 
-  // OpenAI TTS
-  openaiTtsToggle: $("openaiTtsToggle"),
-  openaiApiKey: $("openaiApiKey"),
-  openaiVoiceSelect: $("openaiVoiceSelect"),
+  // ElevenLabs TTS
+  elevenTtsToggle: $("elevenTtsToggle"),
+  elevenApiKey: $("elevenApiKey"),
+  elevenVoiceId: $("elevenVoiceId"),
+  elevenModelSelect: $("elevenModelSelect"),
+  elevenOutputFormat: $("elevenOutputFormat"),
 };
 
 const VALUES = [200, 400, 600, 800, 1000];
@@ -89,7 +93,7 @@ const state = {
   buzzWindowMs: 5000,
   blankMs: 2000,
 
-  openaiAudio: null,
+  ttsAudio: null,
 };
 
 function setStatus(msg) {
@@ -366,20 +370,22 @@ async function speakSystemAsync(text) {
   await waitForSpeechSynthesisToFinish(estimated + 1500);
 }
 
-function getOpenAISettings() {
-  const enabled = ui.openaiTtsToggle ? ui.openaiTtsToggle.checked : false;
-  const key = ui.openaiApiKey ? (ui.openaiApiKey.value || "").trim() : "";
-  const voice = ui.openaiVoiceSelect ? ui.openaiVoiceSelect.value || "alloy" : "alloy";
-  return { enabled, key, voice };
+function getElevenSettings() {
+  const enabled = ui.elevenTtsToggle ? ui.elevenTtsToggle.checked : false;
+  const apiKey = ui.elevenApiKey ? (ui.elevenApiKey.value || "").trim() : "";
+  const voiceId = ui.elevenVoiceId ? (ui.elevenVoiceId.value || "").trim() : "";
+  const modelId = ui.elevenModelSelect ? (ui.elevenModelSelect.value || "eleven_multilingual_v2") : "eleven_multilingual_v2";
+  const outputFormat = ui.elevenOutputFormat ? (ui.elevenOutputFormat.value || "mp3_44100_128") : "mp3_44100_128";
+  return { enabled, apiKey, voiceId, modelId, outputFormat };
 }
 
 /**
  * iOS Safari blocks audio play if it is not user-initiated.
  * Prime the audio element during a user gesture (board cell tap) so later playback works.
  */
-function primeOpenAIAudioOnce() {
-  if (!state.openaiAudio) state.openaiAudio = new Audio();
-  const a = state.openaiAudio;
+function primeTtsAudioOnce() {
+  if (!state.ttsAudio) state.ttsAudio = new Audio();
+  const a = state.ttsAudio;
   a.playsInline = true;
 
   if (a.__primed) return;
@@ -399,26 +405,33 @@ function primeOpenAIAudioOnce() {
     });
 }
 
-async function speakOpenAIAsync(text) {
-  const { enabled, key, voice } = getOpenAISettings();
-  if (!enabled || !key) return false;
+async function speakElevenAsync(text) {
+  const { enabled, apiKey, voiceId, modelId, outputFormat } = getElevenSettings();
+  if (!enabled || !apiKey || !voiceId) return false;
 
   try {
-    if (!state.openaiAudio) state.openaiAudio = new Audio();
-    const a = state.openaiAudio;
+    if (!state.ttsAudio) state.ttsAudio = new Audio();
+    const a = state.ttsAudio;
     a.playsInline = true;
 
-    const res = await fetch("https://api.openai.com/v1/audio/speech", {
+    // Per ElevenLabs docs: output_format is a query param; xi-api-key is required header.  [oai_citation:1‡ElevenLabs](https://elevenlabs.io/docs/api-reference/text-to-speech/convert/llms.txt)
+    const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=${encodeURIComponent(outputFormat)}`;
+
+    const res = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${key}`,
+        "xi-api-key": apiKey,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini-tts",
-        voice,
-        input: text,
-        response_format: "aac",
+        text,
+        model_id: modelId,
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
+          style: 0,
+          use_speaker_boost: true,
+        },
       }),
     });
 
@@ -428,7 +441,7 @@ async function speakOpenAIAsync(text) {
     }
 
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
+    const objUrl = URL.createObjectURL(blob);
 
     try {
       window.speechSynthesis?.cancel?.();
@@ -437,22 +450,22 @@ async function speakOpenAIAsync(text) {
     await new Promise((resolve, reject) => {
       a.onended = resolve;
       a.onerror = () => reject(new Error("Audio playback failed"));
-      a.src = url;
+      a.src = objUrl;
       a.currentTime = 0;
       a.play().catch(reject);
     });
 
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(objUrl);
     return true;
   } catch (e) {
-    console.error("OpenAI TTS failed:", e);
-    setStatus(`OpenAI TTS failed; using system voice. ${String(e).slice(0, 140)}`);
+    console.error("ElevenLabs TTS failed:", e);
+    setStatus(`ElevenLabs TTS failed; using system voice. ${String(e).slice(0, 140)}`);
     return false;
   }
 }
 
 async function speakAsync(text) {
-  const ok = await speakOpenAIAsync(text);
+  const ok = await speakElevenAsync(text);
   if (ok) return;
   await speakSystemAsync(text);
 }
@@ -614,9 +627,9 @@ function openClue(catIndex, value) {
 
   state.active = { catIndex, value, clueObj };
 
-  // Prime OpenAI audio on a user gesture so iOS will later allow playback
-  const { enabled, key } = getOpenAISettings();
-  if (enabled && key) primeOpenAIAudioOnce();
+  // Prime audio on a user gesture so iOS will allow playback later
+  const { enabled, apiKey, voiceId } = getElevenSettings();
+  if (enabled && apiKey && voiceId) primeTtsAudioOnce();
 
   ui.clueCategory.textContent = cat.name;
   ui.clueValue.textContent = `$${value}`;
@@ -882,18 +895,22 @@ function applySettingsFromUI() {
   localStorage.setItem("jt_buzz_window_sec", String(ui.buzzWindowSec.value || "5"));
   localStorage.setItem("jt_blank_ms", String(ui.blankMs.value || "2000"));
 
-  if (ui.openaiTtsToggle) localStorage.setItem("jt_openai_tts_enabled", ui.openaiTtsToggle.checked ? "1" : "0");
-  if (ui.openaiApiKey) localStorage.setItem("jt_openai_api_key", ui.openaiApiKey.value || "");
-  if (ui.openaiVoiceSelect) localStorage.setItem("jt_openai_voice", ui.openaiVoiceSelect.value || "alloy");
+  if (ui.elevenTtsToggle) localStorage.setItem("jt_eleven_enabled", ui.elevenTtsToggle.checked ? "1" : "0");
+  if (ui.elevenApiKey) localStorage.setItem("jt_eleven_key", ui.elevenApiKey.value || "");
+  if (ui.elevenVoiceId) localStorage.setItem("jt_eleven_voice_id", ui.elevenVoiceId.value || "");
+  if (ui.elevenModelSelect) localStorage.setItem("jt_eleven_model", ui.elevenModelSelect.value || "eleven_multilingual_v2");
+  if (ui.elevenOutputFormat) localStorage.setItem("jt_eleven_output", ui.elevenOutputFormat.value || "mp3_44100_128");
 }
 
 function loadSettingsToUI() {
   ui.buzzWindowSec.value = localStorage.getItem("jt_buzz_window_sec") || "5";
   ui.blankMs.value = localStorage.getItem("jt_blank_ms") || "2000";
 
-  if (ui.openaiTtsToggle) ui.openaiTtsToggle.checked = localStorage.getItem("jt_openai_tts_enabled") === "1";
-  if (ui.openaiApiKey) ui.openaiApiKey.value = localStorage.getItem("jt_openai_api_key") || "";
-  if (ui.openaiVoiceSelect) ui.openaiVoiceSelect.value = localStorage.getItem("jt_openai_voice") || "alloy";
+  if (ui.elevenTtsToggle) ui.elevenTtsToggle.checked = localStorage.getItem("jt_eleven_enabled") === "1";
+  if (ui.elevenApiKey) ui.elevenApiKey.value = localStorage.getItem("jt_eleven_key") || "";
+  if (ui.elevenVoiceId) ui.elevenVoiceId.value = localStorage.getItem("jt_eleven_voice_id") || "";
+  if (ui.elevenModelSelect) ui.elevenModelSelect.value = localStorage.getItem("jt_eleven_model") || "eleven_multilingual_v2";
+  if (ui.elevenOutputFormat) ui.elevenOutputFormat.value = localStorage.getItem("jt_eleven_output") || "mp3_44100_128";
 }
 
 /* ---------------- iOS-safe Settings modal ---------------- */
@@ -959,9 +976,11 @@ ui.blankMs.addEventListener("change", () => {
   applySettingsFromUI();
 });
 
-if (ui.openaiTtsToggle) ui.openaiTtsToggle.addEventListener("change", applySettingsFromUI);
-if (ui.openaiApiKey) ui.openaiApiKey.addEventListener("change", applySettingsFromUI);
-if (ui.openaiVoiceSelect) ui.openaiVoiceSelect.addEventListener("change", applySettingsFromUI);
+if (ui.elevenTtsToggle) ui.elevenTtsToggle.addEventListener("change", applySettingsFromUI);
+if (ui.elevenApiKey) ui.elevenApiKey.addEventListener("change", applySettingsFromUI);
+if (ui.elevenVoiceId) ui.elevenVoiceId.addEventListener("change", applySettingsFromUI);
+if (ui.elevenModelSelect) ui.elevenModelSelect.addEventListener("change", applySettingsFromUI);
+if (ui.elevenOutputFormat) ui.elevenOutputFormat.addEventListener("change", applySettingsFromUI);
 
 ui.btnNewBoard.addEventListener("click", () => {
   applySettingsFromUI();
